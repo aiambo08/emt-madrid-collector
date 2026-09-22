@@ -8,7 +8,7 @@ from dataclasses import asdict
 import structlog
 from pydantic import ValidationError
 
-from emt_collector.api.client import EMTClient
+from emt_collector.api.client import EMTClient, EMTError
 from emt_collector.collector import Collector
 from emt_collector.config import ConfigError, Settings
 from emt_collector.db.repository import Repository, init_schema, make_engine
@@ -49,6 +49,15 @@ NEEDS_DB = {"init-db", "once", "run"}
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    try:
+        return _run(args)
+    except EMTError as exc:
+        log.error("emt.fatal", command=args.command, error=str(exc))
+        print(f"EMT API error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run(args: argparse.Namespace) -> int:
     try:
         settings = Settings()
         if args.command in NEEDS_API:
