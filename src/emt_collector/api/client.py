@@ -29,6 +29,12 @@ STOP_ARRIVES_PATH = "/v2/transport/busemtmad/stops/{stop}/arrives/{line}/"
 OK_CODES = {"00", "01"}
 # Codes MobilityLabs returns for a missing/expired/invalid accessToken.
 AUTH_ERROR_CODES = {"80", "81", "82", "83", "84", "85", "86", "87", "88", "89"}
+# Login-time codes observed against the live API (descriptions are often empty).
+LOGIN_ERROR_HINTS = {
+    "84": "invalid X-ClientId/passKey (EMT_CLIENT_ID / EMT_PASS_KEY)",
+    "92": "user not found or wrong password (EMT_EMAIL / EMT_PASSWORD)",
+    "99": "no credentials received by the API",
+}
 
 ARRIVES_BODY = {
     "cultureInfo": "ES",
@@ -187,7 +193,7 @@ class EMTClient:
             )
             code = str(payload.get("code", ""))
             if code not in OK_CODES:
-                raise EMTAuthError(f"login failed (code {code}): {payload.get('description')}")
+                raise EMTAuthError(_login_failure(code, str(payload.get("description") or "")))
             try:
                 data = payload["data"][0]
                 value = str(data["accessToken"])
@@ -267,17 +273,22 @@ class EMTClient:
                 raise EMTAuthError("HTTP 401")
             if resp.status_code == 429 or resp.status_code >= 500:
                 raise EMTTransientError(f"HTTP {resp.status_code}")
-            if resp.status_code >= 400:
-                raise EMTResponseError(str(resp.status_code), resp.text[:200])
             try:
                 body = resp.json()
             except ValueError as exc:
+                if resp.status_code >= 400:
+                    raise EMTResponseError(str(resp.status_code), resp.text[:200]) from exc
                 raise EMTTransientError("non-JSON body") from exc
             if not isinstance(body, dict):
-                raise EMTResponseError("??", "unexpected JSON shape")
+                raise EMTResponseError(str(resp.status_code), "unexpected JSON shape")
             code = str(body.get("code", ""))
+            description = str(body.get("description") or "")
             if code in AUTH_ERROR_CODES:
-                raise EMTAuthError(f"code {code}: {body.get('description')}")
+                if not auth:
+                    raise EMTAuthError(_login_failure(code, description))
+                raise EMTAuthError(f"code {code}: {description}")
+            if resp.status_code >= 400:
+                raise EMTResponseError(code or str(resp.status_code), description)
             return body
 
         return _do()
@@ -318,6 +329,14 @@ class EMTClient:
         body = self._request("POST", path, json=ARRIVES_BODY)
         _raise_for_code(body)
         return ArrivalsResponse.model_validate(body)
+
+
+def _login_failure(code: str, description: str) -> str:
+    hint = LOGIN_ERROR_HINTS.get(code)
+    detail = description or hint or ""
+    if description and hint:
+        detail = f"{description} ({hint})"
+    return f"login failed (code {code}): {detail}"
 
 
 def _raise_for_code(body: dict[str, Any]) -> None:

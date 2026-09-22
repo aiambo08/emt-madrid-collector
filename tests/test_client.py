@@ -116,6 +116,37 @@ def test_bad_credentials(make_client: Callable[..., EMTClient]) -> None:
         client.login()
 
 
+def test_invalid_app_credentials_http_403_code_84(make_client: Callable[..., EMTClient]) -> None:
+    """Live API answers HTTP 403 + code 84 (empty description) for a bad X-ClientId/passKey."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"code": "84", "description": "", "data": []})
+
+    client = make_client(handler)
+    with pytest.raises(EMTAuthError, match=r"code 84.*EMT_CLIENT_ID / EMT_PASS_KEY"):
+        client.login()
+
+
+def test_user_not_found_code_92_keeps_description(make_client: Callable[..., EMTClient]) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": "92", "description": "Error: User not found"})
+
+    client = make_client(handler)
+    with pytest.raises(EMTAuthError, match=r"code 92.*User not found.*EMT_EMAIL"):
+        client.login()
+
+
+def test_http_4xx_without_json_is_response_error(make_client: Callable[..., EMTClient]) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/user/login/"):
+            return httpx.Response(200, json=LOGIN_OK)
+        return httpx.Response(404, text="not found")
+
+    client = make_client(handler)
+    with pytest.raises(EMTResponseError, match="404"):
+        client.stop_arrivals("62")
+
+
 def test_proactive_reauth_when_token_near_expiry(
     make_client: Callable[..., EMTClient], clock: FakeClock
 ) -> None:

@@ -96,6 +96,18 @@ Manejo de errores del cliente (`src/emt_collector/api/client.py`):
 
 La EMT pide citar *EMT Madrid MobilityLabs* como fuente de los datos.
 
+### Errores de login habituales
+
+Si `EMT_CLIENT_ID`/`EMT_PASS_KEY` están definidos tienen prioridad sobre `EMT_EMAIL`/`EMT_PASSWORD`.
+`emt-collector check` termina con `EMT API error: login failed (code XX)` y este significado
+(observado contra la API real; la descripción suele venir vacía):
+
+| Código | HTTP | Causa                                                                 |
+|--------|------|-----------------------------------------------------------------------|
+| `84`   | 403  | `X-ClientId`/`passKey` inválidos (revisa `EMT_CLIENT_ID`/`EMT_PASS_KEY`, sin espacios ni comillas, sin intercambiarlos). |
+| `92`   | 200  | Usuario no encontrado o contraseña incorrecta (`EMT_EMAIL`/`EMT_PASSWORD`). |
+| `99`   | 200  | La API no recibió credenciales (`.env` no cargado o variables mal escritas). |
+
 ## Configuración (.env)
 
 ```bash
