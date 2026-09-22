@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     emt_stops: Annotated[list[str], NoDecode] = Field(default_factory=list)
     emt_stops_refresh_hours: int = 24
 
-    collect_interval_seconds: int = Field(60, gt=0)
+    collect_interval_seconds: int = Field(default=60, gt=0)
     emt_max_requests_per_minute: int = 100
     emt_daily_request_budget: int = 150_000
     emt_request_timeout_seconds: float = 15.0
