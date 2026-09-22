@@ -81,8 +81,17 @@ class Collector:
         self._client = client
         self._repo = repo
         self._target_stops: list[str] | None = None
-        self._line_filter: set[str] | None = None
+        # stop_id -> normalized line labels to keep, or None to keep every line at that stop
+        self._stop_filters: dict[str, set[str] | None] = {}
         self._stops_resolved_at: datetime | None = None
+
+    @property
+    def _explicit_stops(self) -> set[str]:
+        return {s.strip() for s in self._settings.emt_stops if s.strip()}
+
+    @property
+    def _configured_lines(self) -> set[str]:
+        return {normalize_line(x) for x in self._settings.emt_lines}
 
     # -- target resolution -----------------------------------------------------------------
 
@@ -117,71 +126,84 @@ class Collector:
         ):
             return self._target_stops
 
-        stops: dict[str, dict[str, Any]] = {}
-        for stop_id in self._settings.emt_stops:
-            stops[stop_id] = {"stop_id": stop_id, "lines": None}
+        explicit = self._explicit_stops
+        stops: dict[str, dict[str, Any]] = {
+            stop_id: {"stop_id": stop_id, "lines": set()} for stop_id in explicit
+        }
+        filters: dict[str, set[str] | None] = dict.fromkeys(explicit)
 
-        line_filter: set[str] | None = None
+        line_filter: set[str] = set()
         if self._settings.emt_lines:
             try:
                 matched, labels = self._resolve_line_ids()
-                line_filter = labels or {normalize_line(x) for x in self._settings.emt_lines}
+                line_filter = labels or self._configured_lines
                 for info in matched:
                     for direction in (1, 2):
                         result = self._client.line_stops(info.line, direction)
                         for s in result.stops:
-                            row = stops.setdefault(
-                                s.stop, {"stop_id": s.stop, "name": s.name, "lines": set()}
-                            )
+                            row = stops.setdefault(s.stop, {"stop_id": s.stop, "lines": set()})
                             row.setdefault("name", s.name)
                             if s.geometry is not None:
                                 row["lat"], row["lon"] = s.geometry.lat, s.geometry.lon
-                            lines_set = row.get("lines")
-                            if isinstance(lines_set, set):
-                                lines_set.add(info.label)
+                            row["lines"].add(info.label)
+                            if s.stop not in explicit:
+                                filters[s.stop] = line_filter
             except EMTError as exc:
-                cached = self._repo.cached_stops()
-                log.error(
-                    "collector.stops_refresh_failed",
-                    error=str(exc),
-                    cached_stops=len(cached),
-                )
-                self._repo.record_gap(
-                    scope="scheduler", kind="stops_refresh_failed", detail=str(exc)
-                )
-                if self._target_stops:
-                    return self._target_stops
-                if cached:
-                    self._target_stops = sorted(s.stop_id for s in cached)
-                    self._line_filter = {normalize_line(x) for x in self._settings.emt_lines}
-                    self._stops_resolved_at = now
-                    return self._target_stops
-                raise
+                return self._fallback_targets(exc, now)
 
-        rows = []
-        for row in stops.values():
-            lines_val = row.get("lines")
-            rows.append(
-                {
-                    "stop_id": row["stop_id"],
-                    "name": row.get("name"),
-                    "lat": row.get("lat"),
-                    "lon": row.get("lon"),
-                    "lines": ",".join(sorted(lines_val)) if isinstance(lines_val, set) else None,
-                    "updated_at": now,
-                }
-            )
+        rows = [
+            {
+                "stop_id": row["stop_id"],
+                "name": row.get("name"),
+                "lat": row.get("lat"),
+                "lon": row.get("lon"),
+                "lines": ",".join(sorted(row["lines"])) or None,
+                "updated_at": now,
+            }
+            for row in stops.values()
+        ]
         self._repo.upsert_stops(rows)
-        self._target_stops = sorted(stops)
-        self._line_filter = line_filter
-        self._stops_resolved_at = now
-        self._warn_budget(len(self._target_stops))
+        self._set_targets(filters, now)
+        self._warn_budget(len(filters))
         log.info(
             "collector.targets_resolved",
-            stops=len(self._target_stops),
+            stops=len(filters),
+            explicit_stops=len(explicit),
             lines=sorted(line_filter) if line_filter else "all",
         )
-        return self._target_stops
+        return self._target_stops or []
+
+    def _set_targets(self, filters: dict[str, set[str] | None], now: datetime) -> None:
+        self._stop_filters = filters
+        self._target_stops = sorted(filters)
+        self._stops_resolved_at = now
+
+    def _fallback_targets(self, exc: EMTError, now: datetime) -> list[str]:
+        """Line/stop discovery failed: keep the previous targets, else rebuild from the cache."""
+        cached = self._repo.cached_stops()
+        log.error("collector.stops_refresh_failed", error=str(exc), cached_stops=len(cached))
+        self._repo.record_gap(scope="scheduler", kind="stops_refresh_failed", detail=str(exc))
+        if self._target_stops:
+            return self._target_stops
+
+        wanted = self._configured_lines
+        filters: dict[str, set[str] | None] = dict.fromkeys(self._explicit_stops)
+        for stop in cached:
+            if stop.stop_id in filters or not stop.lines:
+                continue
+            cached_lines = {normalize_line(x) for x in stop.lines.split(",")}
+            if cached_lines & wanted:
+                filters[stop.stop_id] = wanted
+        if not filters:
+            raise exc
+        self._set_targets(filters, now)
+        log.warning(
+            "collector.targets_from_cache",
+            stops=len(filters),
+            explicit_stops=len(self._explicit_stops),
+            lines=sorted(wanted),
+        )
+        return self._target_stops or []
 
     def _warn_budget(self, stops: int) -> None:
         per_day = stops * self._settings.cycles_per_day
@@ -207,8 +229,9 @@ class Collector:
 
     # -- cycle -----------------------------------------------------------------------------
 
-    def _keep(self, arrive: Arrive) -> bool:
-        return self._line_filter is None or normalize_line(arrive.line) in self._line_filter
+    def _keep(self, stop_id: str, arrive: Arrive) -> bool:
+        allowed = self._stop_filters.get(stop_id)
+        return allowed is None or normalize_line(arrive.line) in allowed
 
     def run_cycle(self) -> CycleResult:
         started_at = utcnow()
@@ -269,7 +292,7 @@ class Collector:
             ingested_at = utcnow()
             sample_ts = to_utc(resp.server_time, ingested_at)
             for a in resp.arrivals:
-                if not self._keep(a):
+                if not self._keep(stop_id, a):
                     continue
                 arrivals.append(
                     {

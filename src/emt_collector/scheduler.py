@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 from types import FrameType
 
 import structlog
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED, JobExecutionEvent
+from apscheduler.events import (
+    EVENT_JOB_ERROR,
+    EVENT_JOB_MAX_INSTANCES,
+    EVENT_JOB_MISSED,
+    JobEvent,
+    JobExecutionEvent,
+    JobSubmissionEvent,
+)
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -32,15 +39,20 @@ def build_scheduler(
         next_run_time=datetime.now(timezone.utc),
     )
 
-    def _on_event(event: JobExecutionEvent) -> None:
-        if event.code == EVENT_JOB_MISSED:
+    def _on_event(event: JobEvent) -> None:
+        if isinstance(event, JobSubmissionEvent) and event.code == EVENT_JOB_MAX_INSTANCES:
+            # previous cycle still running when the next one was due: that sample is skipped
+            for scheduled in event.scheduled_run_times:
+                log.warning("scheduler.job_skipped_overrun", scheduled=str(scheduled))
+                _safe_gap(repo, "job_skipped_overrun", f"scheduled={scheduled}")
+        elif isinstance(event, JobExecutionEvent) and event.code == EVENT_JOB_MISSED:
             log.warning("scheduler.job_missed", scheduled=str(event.scheduled_run_time))
             _safe_gap(repo, "job_missed", f"scheduled={event.scheduled_run_time}")
-        elif event.code == EVENT_JOB_ERROR:
+        elif isinstance(event, JobExecutionEvent) and event.code == EVENT_JOB_ERROR:
             log.error("scheduler.job_error", error=str(event.exception))
             _safe_gap(repo, "job_error", str(event.exception))
 
-    scheduler.add_listener(_on_event, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
+    scheduler.add_listener(_on_event, EVENT_JOB_ERROR | EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES)
     return scheduler
 
 
