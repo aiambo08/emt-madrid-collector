@@ -115,7 +115,8 @@ $EDITOR .env
 | `EMT_DAILY_REQUEST_BUDGET` | `150000` | Presupuesto diario para el aviso de cuota. |
 | `EMT_REQUEST_TIMEOUT_SECONDS` | `15` | Timeout HTTP. |
 | `EMT_MAX_RETRIES` | `4` | Reintentos ante red/5xx. |
-| `DATABASE_URL` | `postgresql+psycopg://emt:emt@localhost:5432/emt` | URL SQLAlchemy. También vale `sqlite+pysqlite:///emt.db` para pruebas. |
+| `POSTGRES_PASSWORD` | – | Obligatoria. Con `POSTGRES_USER`/`POSTGRES_DB` (`emt`) y `POSTGRES_HOST` (`localhost`; `db` en Compose) forma la URL de conexión, escapando cualquier carácter. |
+| `DATABASE_URL` | – | URL SQLAlchemy completa; si está definida tiene prioridad sobre `POSTGRES_*`. También vale `sqlite+pysqlite:///emt.db` para pruebas. |
 | `DB_USE_TIMESCALE` | `true` | Crear hypertables si la extensión está disponible. |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `LOG_FORMAT=console` para desarrollo. |
 
@@ -124,8 +125,9 @@ configuradas (una parada de la 27 también recibe la 45, la 147…), para manten
 acotado. En las paradas listadas explícitamente en `EMT_STOPS` se guarda todo lo que pasa por
 ellas, aunque también pertenezcan a una línea configurada.
 
-Requisitos por comando: `init-db` sólo necesita `DATABASE_URL`; `lines` necesita credenciales;
-`check`, `once` y `run` necesitan credenciales y `EMT_LINES` y/o `EMT_STOPS`.
+Requisitos por comando: `init-db` sólo necesita la base de datos; `lines` sólo credenciales;
+`check` credenciales y `EMT_LINES` y/o `EMT_STOPS`; `once` y `run` además la base de datos
+(`run` valida también `COLLECT_INTERVAL_SECONDS`).
 
 ## Arrancar con Docker
 
@@ -187,8 +189,14 @@ docker compose logs -f collector
   `docker compose restart collector` o un `docker compose pull && up -d` no dejan ciclos a
   medias sin registrar.
 - `POSTGRES_PASSWORD` no tiene valor por defecto: Compose se niega a arrancar sin ella y el
-  recolector recibe `DATABASE_URL` construida con esas credenciales. El puerto 5432 no se
-  publica por defecto.
+  recolector se conecta con esas mismas credenciales. El puerto 5432 no se publica por
+  defecto.
+- **Volumen `pgdata` ya existente** (creado con una versión anterior que usaba la contraseña
+  `emt`): Postgres sólo aplica `POSTGRES_PASSWORD` al inicializar el volumen, así que cambia el
+  rol antes de arrancar el collector con la nueva contraseña:
+  `docker compose up -d db && docker compose exec db psql -U emt -d emt -c "ALTER ROLE emt PASSWORD '<nueva>'"`.
+  Alternativa sin migrar: fija `DATABASE_URL` en `.env` con la contraseña antigua (tiene
+  prioridad sobre `POSTGRES_*`).
 - **Backups**: `docker compose exec db pg_dump -U emt -Fc emt > emt_$(date +%F).dump` en un
   cron diario; el volumen `pgdata` contiene todo el histórico.
 - Actualizar: `git pull && docker compose up -d --build`.

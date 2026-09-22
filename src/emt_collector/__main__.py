@@ -44,6 +44,7 @@ def _parser() -> argparse.ArgumentParser:
 
 NEEDS_API = {"lines", "check", "once", "run"}
 NEEDS_TARGETS = {"check", "once", "run"}
+NEEDS_DB = {"init-db", "once", "run"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
             settings.require_credentials()
         if args.command in NEEDS_TARGETS:
             settings.require_targets()
+        if args.command == "run":
+            settings.require_interval()
+        database_url = settings.resolved_database_url() if args.command in NEEDS_DB else ""
     except (ValidationError, ConfigError) as exc:
         print(f"Invalid configuration:\n{exc}", file=sys.stderr)
         return 2
@@ -86,9 +90,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
 
-    engine = make_engine(settings.database_url)
+    engine = make_engine(database_url)
     timescale = init_schema(engine, use_timescale=settings.db_use_timescale)
-    log.info("db.ready", url=_redact(settings.database_url), timescale=timescale)
+    log.info("db.ready", url=_redact(database_url), timescale=timescale)
     if args.command == "init-db":
         return 0
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from emt_collector.__main__ import main
 from emt_collector.config import ConfigError, Settings
@@ -45,9 +45,28 @@ def test_command_specific_requirements(monkeypatch: pytest.MonkeyPatch) -> None:
     Settings(_env_file=None, emt_client_id="c", emt_pass_key="k", emt_stops="1").require_targets()
 
 
-def test_interval_lower_bound() -> None:
-    with pytest.raises(ValidationError, match="COLLECT_INTERVAL_SECONDS"):
-        Settings(_env_file=None, collect_interval_seconds=1)
+def test_interval_checked_only_for_run() -> None:
+    s = Settings(_env_file=None, collect_interval_seconds=1)
+    with pytest.raises(ConfigError, match="COLLECT_INTERVAL_SECONDS"):
+        s.require_interval()
+
+
+def test_database_url_built_from_postgres_parts_with_escaping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear(monkeypatch)
+    for k in ("POSTGRES_HOST", "POSTGRES_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(ConfigError, match="POSTGRES_PASSWORD"):
+        Settings(_env_file=None).resolved_database_url()
+    s = Settings(_env_file=None, postgres_host="db", postgres_password="al@ph/a#1%")
+    url = s.resolved_database_url()
+    assert url == "postgresql+psycopg://emt:al%40ph%2Fa%231%25@db:5432/emt"
+    assert make_url(url).password == "al@ph/a#1%"
+    explicit = Settings(
+        _env_file=None, database_url="sqlite+pysqlite:///x.db", postgres_password="p"
+    )
+    assert explicit.resolved_database_url() == "sqlite+pysqlite:///x.db"
 
 
 def test_init_db_needs_no_credentials(
@@ -55,6 +74,7 @@ def test_init_db_needs_no_credentials(
 ) -> None:
     _clear(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    monkeypatch.setenv("COLLECT_INTERVAL_SECONDS", "1")  # irrelevant for init-db
     monkeypatch.chdir("/")  # no .env
     assert main(["init-db"]) == 0
     assert main(["once"]) == 2
