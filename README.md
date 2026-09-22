@@ -32,8 +32,9 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 
 1. Al arrancar, `emt-collector run` crea el esquema (`init_schema`) y programa un job de
    APScheduler cada `COLLECT_INTERVAL_SECONDS` (60 s) con `max_instances=1` y `coalesce=True`
-   (si un ciclo tarda más de un minuto no se solapan ejecuciones; los ticks perdidos quedan
-   registrados como gap `scheduler/job_missed`).
+   (si un ciclo tarda más de un minuto no se solapan ejecuciones; el tick saltado queda
+   registrado como gap `scheduler/job_skipped_overrun`, y los ticks perdidos por otras causas
+   como `scheduler/job_missed`).
 2. Cada ciclo resuelve los **objetivos**: para cada línea de `EMT_LINES` obtiene sus paradas
    (ambos sentidos) y las une con `EMT_STOPS`. La lista se cachea en la tabla `stops` y se
    refresca cada `EMT_STOPS_REFRESH_HOURS`.
@@ -118,14 +119,18 @@ $EDITOR .env
 | `DB_USE_TIMESCALE` | `true` | Crear hypertables si la extensión está disponible. |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `LOG_FORMAT=console` para desarrollo. |
 
-Cuando `EMT_LINES` está definido, de las paradas de esas líneas sólo se guardan las llegadas
-de las líneas configuradas (una parada de la 27 también recibe la 45, la 147…), para mantener
-el dataset acotado. Si sólo defines `EMT_STOPS`, se guarda todo lo que pasa por ellas.
+De las paradas descubiertas a partir de `EMT_LINES` sólo se guardan las llegadas de las líneas
+configuradas (una parada de la 27 también recibe la 45, la 147…), para mantener el dataset
+acotado. En las paradas listadas explícitamente en `EMT_STOPS` se guarda todo lo que pasa por
+ellas, aunque también pertenezcan a una línea configurada.
+
+Requisitos por comando: `init-db` sólo necesita `DATABASE_URL`; `lines` necesita credenciales;
+`check`, `once` y `run` necesitan credenciales y `EMT_LINES` y/o `EMT_STOPS`.
 
 ## Arrancar con Docker
 
 ```bash
-cp .env.example .env            # y rellena las credenciales
+cp .env.example .env            # credenciales EMT + POSTGRES_PASSWORD (obligatoria)
 docker compose up -d --build    # levanta TimescaleDB + recolector
 docker compose logs -f collector
 ```
@@ -181,8 +186,9 @@ docker compose logs -f collector
 - El proceso maneja `SIGTERM` y termina el ciclo en curso antes de salir, así que
   `docker compose restart collector` o un `docker compose pull && up -d` no dejan ciclos a
   medias sin registrar.
-- Cambia `POSTGRES_PASSWORD`/`DATABASE_URL` en `.env` antes de exponer el puerto 5432 (por
-  defecto no se publica).
+- `POSTGRES_PASSWORD` no tiene valor por defecto: Compose se niega a arrancar sin ella y el
+  recolector recibe `DATABASE_URL` construida con esas credenciales. El puerto 5432 no se
+  publica por defecto.
 - **Backups**: `docker compose exec db pg_dump -U emt -Fc emt > emt_$(date +%F).dump` en un
   cron diario; el volumen `pgdata` contiene todo el histórico.
 - Actualizar: `git pull && docker compose up -d --build`.
@@ -246,7 +252,8 @@ Una fila por tick del scheduler: `started_at`, `finished_at`, `status`
 
 Huecos del dataset: `occurred_at`, `scope` (`cycle` | `stop` | `scheduler`), `kind`
 (`network`, `auth`, `api_error_<code>`, `empty`, `all_stops_failed`, `db_error`,
-`job_missed`, `job_error`, `stops_refresh_failed`, `targets_unresolved`), `stop_id`, `line`,
+`job_missed`, `job_skipped_overrun`, `job_error`, `stops_refresh_failed`,
+`targets_unresolved`), `stop_id`, `line`,
 `detail`, `cycle_id`.
 
 ### `stops`

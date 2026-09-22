@@ -207,3 +207,60 @@ def test_explicit_stops_without_lines_polls_only_those(
     assert result.stops_requested == 2
     assert result.arrivals_inserted == 1  # no line filter: everything at the stop is kept
     assert not any("/lines/" in c for c in api.calls)
+
+
+def _settings(**kwargs: Any) -> Settings:
+    return Settings(
+        _env_file=None,
+        emt_email="u@example.com",
+        emt_password="p",
+        emt_max_requests_per_minute=10_000,
+        **kwargs,
+    )
+
+
+def test_explicit_stop_keeps_all_lines_while_line_stops_are_filtered(
+    repo: Repository, make_client: Callable[..., EMTClient]
+) -> None:
+    settings = _settings(emt_lines="27", emt_stops="100, 62")
+    api = FakeAPI()
+    api.arrivals["100"] = arrivals_response([arrive("45", "100", 7)])
+    api.arrivals["62"] = arrivals_response([arrive("27", "62", 540), arrive("45", "62", 8)])
+    api.arrivals["63"] = arrivals_response([arrive("27", "63", 541), arrive("45", "63", 9)])
+    collector = build(settings, repo, api, make_client)
+    result = collector.run_cycle()
+    assert result.stops_requested == 4  # 100 + 62/63/64 (62 both explicit and from line 27)
+    # stop 100 and 62 are explicit -> every line kept; stop 63 is line-derived -> only 27
+    assert result.arrivals_inserted == 1 + 2 + 1
+
+
+def test_refresh_failure_falls_back_to_cache_and_explicit_stops(
+    repo: Repository, engine: Engine, make_client: Callable[..., EMTClient]
+) -> None:
+    now = datetime.now(timezone.utc)
+    repo.upsert_stops(
+        [
+            {"stop_id": "62", "lines": "27,45", "updated_at": now},
+            {"stop_id": "900", "lines": "45", "updated_at": now},  # stale: from another config
+        ]
+    )
+    settings = _settings(emt_lines="27", emt_stops="100")
+    api = FakeAPI()
+    api.arrivals["62"] = arrivals_response([arrive("27", "62", 540), arrive("45", "62", 8)])
+    api.arrivals["100"] = arrivals_response([arrive("45", "100", 7)])
+
+    original = api.__call__
+
+    def failing(req: httpx.Request) -> httpx.Response:
+        if "/lines/info/" in req.url.path:
+            return httpx.Response(200, json={"code": "90", "description": "maintenance"})
+        return original(req)
+
+    collector = Collector(settings, make_client(failing), repo)
+    result = collector.run_cycle()
+    assert result.status == "ok"
+    assert result.stops_requested == 2  # 62 (cached, line 27) + 100 (explicit); 900 excluded
+    assert result.arrivals_inserted == 2  # 62 filtered to line 27, 100 keeps line 45
+    with Session(engine) as s:
+        kinds = set(s.scalars(select(CollectionGap.kind)).all())
+    assert "stops_refresh_failed" in kinds

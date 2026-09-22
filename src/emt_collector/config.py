@@ -18,6 +18,10 @@ def _parse_csv(value: object) -> list[str]:
     raise TypeError(f"cannot parse list from {value!r}")
 
 
+class ConfigError(ValueError):
+    """A command-specific configuration requirement is not met."""
+
+
 class Settings(BaseSettings):
     """Runtime configuration, read from environment variables / `.env`."""
 
@@ -59,18 +63,32 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def _check_credentials_and_targets(self) -> Settings:
-        has_user = bool(self.emt_email and self.emt_password)
-        has_app = bool(self.emt_client_id and self.emt_pass_key)
-        if not (has_user or has_app):
-            raise ValueError(
-                "Set EMT_EMAIL + EMT_PASSWORD or EMT_CLIENT_ID + EMT_PASS_KEY (see .env.example)"
-            )
-        if not self.emt_lines and not self.emt_stops:
-            raise ValueError("Set EMT_LINES and/or EMT_STOPS; polling every stop is not viable")
+    def _check_interval(self) -> Settings:
         if self.collect_interval_seconds < 10:
             raise ValueError("COLLECT_INTERVAL_SECONDS must be >= 10")
         return self
+
+    @property
+    def has_credentials(self) -> bool:
+        has_user = bool(self.emt_email and self.emt_password)
+        has_app = bool(self.emt_client_id and self.emt_pass_key)
+        return has_user or has_app
+
+    @property
+    def has_targets(self) -> bool:
+        return bool(self.emt_lines or self.emt_stops)
+
+    def require_credentials(self) -> None:
+        """Needed by every command that talks to the EMT API."""
+        if not self.has_credentials:
+            raise ConfigError(
+                "Set EMT_EMAIL + EMT_PASSWORD or EMT_CLIENT_ID + EMT_PASS_KEY (see .env.example)"
+            )
+
+    def require_targets(self) -> None:
+        """Needed by collection commands (`run`, `once`, `check`)."""
+        if not self.has_targets:
+            raise ConfigError("Set EMT_LINES and/or EMT_STOPS; polling every stop is not viable")
 
     @property
     def cycles_per_day(self) -> float:

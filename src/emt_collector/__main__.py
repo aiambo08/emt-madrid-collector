@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from emt_collector.api.client import EMTClient
 from emt_collector.collector import Collector
-from emt_collector.config import Settings
+from emt_collector.config import ConfigError, Settings
 from emt_collector.db.repository import Repository, init_schema, make_engine
 from emt_collector.logging_setup import configure_logging
 from emt_collector.scheduler import run_forever
@@ -42,11 +42,19 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+NEEDS_API = {"lines", "check", "once", "run"}
+NEEDS_TARGETS = {"check", "once", "run"}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         settings = Settings()
-    except ValidationError as exc:
+        if args.command in NEEDS_API:
+            settings.require_credentials()
+        if args.command in NEEDS_TARGETS:
+            settings.require_targets()
+    except (ValidationError, ConfigError) as exc:
         print(f"Invalid configuration:\n{exc}", file=sys.stderr)
         return 2
     configure_logging(settings.log_level, settings.log_format)

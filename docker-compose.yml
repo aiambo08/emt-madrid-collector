@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-emt}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env (p. ej. openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-emt}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://emt:emt@db:5432/emt}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-emt}:${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}@db:5432/${POSTGRES_DB:-emt}
     depends_on:
       db:
         condition: service_healthy
