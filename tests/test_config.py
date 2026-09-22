@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
 from emt_collector.__main__ import main
@@ -79,3 +80,8 @@ def test_init_db_needs_no_credentials(
     assert main(["init-db"]) == 0
     assert main(["once"]) == 2
     assert "EMT_EMAIL" in capsys.readouterr().err
+
+
+def test_interval_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="collect_interval_seconds"):
+        Settings(_env_file=None, collect_interval_seconds=0)
