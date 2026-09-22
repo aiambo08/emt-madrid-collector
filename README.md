@@ -17,22 +17,261 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 
 ## Contenido
 
-- [Cómo funciona](#cómo-funciona)
-- [Endpoints de la API utilizados](#endpoints-de-la-api-utilizados)
-- [Obtener credenciales](#obtener-credenciales-emt-mobilitylabs)
+- [Funcionalidades](#funcionalidades)
+- [Requisitos previos](#requisitos-previos)
+- [Inicio rápido paso a paso (Docker)](#inicio-rápido-paso-a-paso-docker)
+- [Ejecución local sin Docker](#ejecución-local-sin-docker)
+- [Comandos disponibles](#comandos-disponibles)
+- [Obtener credenciales EMT MobilityLabs](#obtener-credenciales-emt-mobilitylabs)
 - [Configuración (.env)](#configuración-env)
-- [Arrancar con Docker](#arrancar-con-docker)
+- [Cuota de la API y dimensionado](#cuota-de-la-api-y-dimensionado)
+- [Cómo funciona un ciclo](#cómo-funciona-un-ciclo)
+- [Endpoints de la API utilizados](#endpoints-de-la-api-utilizados)
 - [Despliegue 24/7 en un VPS](#despliegue-247-en-un-vps)
 - [Esquema de datos](#esquema-de-datos)
 - [Fiabilidad del dataset](#fiabilidad-del-dataset-gaps-idempotencia-logs)
 - [Volumen y retención](#volumen-y-retención)
 - [Desarrollo](#desarrollo)
 
-## Cómo funciona
+## Funcionalidades
+
+| Área | Qué hace el sistema |
+| --- | --- |
+| **Recolección periódica** | Un proceso 24/7 (APScheduler) lanza un ciclo cada `COLLECT_INTERVAL_SECONDS` (60 s por defecto). Nunca se solapan dos ciclos (`max_instances=1`). |
+| **Selección de objetivos** | Sigue líneas completas (`EMT_LINES`: descubre automáticamente todas sus paradas en ambos sentidos) y/o paradas concretas (`EMT_STOPS`). La lista de paradas se cachea en la tabla `stops` y se refresca cada `EMT_STOPS_REFRESH_HOURS`. |
+| **Posiciones de buses** | De cada respuesta de llegadas extrae la posición GPS de cada bus y la guarda en `bus_positions` (una fila por línea + bus + instante de muestra, deduplicando buses vistos desde varias paradas). |
+| **Llegadas estimadas** | Guarda en `arrival_estimates` cada estimación (parada, línea, bus, segundos hasta llegada, distancia, destino, desvío). |
+| **Autenticación EMT** | Login con email/contraseña o con credenciales de App (`X-ClientId`/`passKey`); renovación automática del token antes de caducar y re-login ante HTTP 401 o códigos `8x`. Errores de login con mensaje explicativo (códigos `84`, `92`, `99`). |
+| **Resiliencia** | Reintentos con backoff exponencial ante errores de red, 5xx y 429; rate limit local (`EMT_MAX_REQUESTS_PER_MINUTE`); aviso cuando la configuración supera la cuota diaria. |
+| **Registro de ciclos** | Cada ciclo queda en `collection_cycles` con inicio, fin, estado (`ok`/`partial`/`empty`/`failed`), paradas consultadas/fallidas, peticiones, reintentos, re-logins y filas insertadas. |
+| **Registro de huecos (gaps)** | Todo lo que falta queda anotado en `collection_gaps`: paradas que no respondieron, ciclos fallidos/vacíos, ticks del scheduler perdidos o saltados, errores de base de datos. |
+| **Idempotencia** | Claves naturales + `INSERT … ON CONFLICT DO NOTHING`: reinicios, reintentos y ejecuciones manuales no duplican datos. |
+| **Dos marcas temporales** | `sample_ts` (hora del servidor EMT) e `ingested_at` (hora del recolector) en todas las filas, para medir latencias y huecos. |
+| **Persistencia** | PostgreSQL 16 con TimescaleDB (hypertables automáticas si la extensión existe; funciona igual en Postgres normal y SQLite para pruebas). |
+| **Logging estructurado** | JSON por línea (`structlog`) con eventos `emt.login`, `emt.retry`, `emt.reauth`, `cycle.start`, `cycle.end`, `stop.failed`, `scheduler.job_missed`, … |
+| **Despliegue** | Dockerfile (usuario no root) + `docker-compose.yml` (TimescaleDB con healthcheck + recolector, volumen persistente, `restart: unless-stopped`, apagado limpio con `SIGTERM`). |
+| **CLI** | `run`, `once`, `init-db`, `check`, `lines` (ver [Comandos disponibles](#comandos-disponibles)). |
+
+## Requisitos previos
+
+- Docker 24+ con el plugin `docker compose` (o Python 3.10+ y un PostgreSQL accesible para la
+  ejecución local).
+- Una cuenta gratuita en <https://mobilitylabs.emtmadrid.es> (ver
+  [Obtener credenciales](#obtener-credenciales-emt-mobilitylabs)).
+
+## Inicio rápido paso a paso (Docker)
+
+Ruta recomendada. Todos los comandos se ejecutan desde la raíz del repositorio.
+
+**Paso 1 — Clonar el repositorio**
+
+```bash
+git clone https://github.com/aiambo08/emt-madrid-collector.git
+cd emt-madrid-collector
+```
+
+**Paso 2 — Crear el fichero `.env`**
+
+```bash
+cp .env.example .env
+```
+
+**Paso 3 — Rellenar `.env`** (editor de texto). Mínimo imprescindible:
+
+```dotenv
+# Credenciales EMT: rellena SOLO una de las dos opciones
+EMT_EMAIL=tu-email@example.com      # opción A: usuario del portal (cuota ~20.000 hits/día)
+EMT_PASSWORD=tu-password
+EMT_CLIENT_ID=                      # opción B: App de MobilityLabs (cuota ~150.000 hits/día)
+EMT_PASS_KEY=                       #   si se rellenan, tienen prioridad sobre la opción A
+
+# Qué recolectar: líneas (etiqueta pública) y/o paradas concretas
+EMT_LINES=27,45
+EMT_STOPS=
+
+# Contraseña de PostgreSQL (obligatoria, elígela tú)
+POSTGRES_PASSWORD=
+```
+
+Genera una contraseña de Postgres con `openssl rand -hex 24` (o en PowerShell
+`-join ((48..57)+(97..122) | Get-Random -Count 32 | % {[char]$_})`). No uses comillas alrededor
+de los valores.
+
+**Paso 4 — Comprobar credenciales y configuración (no escribe en la BD)**
+
+```bash
+docker compose run --rm collector check
+```
+
+Salida esperada:
+
+```json
+{"login": "ok", "daily_quota": 20000, "used_today": 0, "lines": ["27", "45"], "explicit_stops": [], "interval_seconds": 60}
+```
+
+Si termina con `EMT API error: login failed (code 84)` revisa `EMT_CLIENT_ID`/`EMT_PASS_KEY`;
+con `code 92`, `EMT_EMAIL`/`EMT_PASSWORD` (tabla completa en
+[Errores de login](#errores-de-login-habituales)).
+
+**Paso 5 — Ajustar el ritmo a la cuota** (ver
+[Cuota de la API y dimensionado](#cuota-de-la-api-y-dimensionado)). Con la cuota de usuario
+(20.000/día) y dos líneas completas, fija por ejemplo `COLLECT_INTERVAL_SECONDS=300` o limita
+las paradas con `EMT_STOPS`.
+
+**Paso 6 — Probar un único ciclo completo** (crea el esquema e inserta datos)
+
+```bash
+docker compose up -d db
+docker compose run --rm collector once
+```
+
+Imprime un JSON con `status`, `stops_requested`, `stops_ok`, `positions_inserted`,
+`arrivals_inserted` y `stats.requests`; ese número de peticiones es lo que costará cada ciclo
+en cuota.
+
+**Paso 7 — Arrancar el recolector 24/7**
+
+```bash
+docker compose up -d --build
+docker compose logs -f collector
+```
+
+Logs esperados en el primer arranque (JSON, uno por línea):
+
+```json
+{"event":"db.ready","timescale":true,...}
+{"event":"emt.login","token_ttl_seconds":86399,"daily_quota":20000,"used_today":12,...}
+{"event":"collector.targets_resolved","stops":61,"lines":["27","45"],...}
+{"event":"cycle.end","status":"ok","stops_requested":61,"stops_ok":61,"positions_inserted":38,"arrivals_inserted":112,"duration_seconds":8.4,...}
+```
+
+**Paso 8 — Verificar que se acumulan datos**
+
+```bash
+docker compose exec db psql -U emt -d emt -c \
+  "SELECT status, count(*), max(finished_at) FROM collection_cycles GROUP BY 1;"
+docker compose exec db psql -U emt -d emt -c \
+  "SELECT count(*) AS posiciones, max(sample_ts) FROM bus_positions;"
+```
+
+**Operación diaria**
+
+| Acción | Comando |
+| --- | --- |
+| Ver logs | `docker compose logs -f collector` |
+| Parar / arrancar | `docker compose stop collector` / `docker compose start collector` |
+| Aplicar cambios de `.env` | `docker compose up -d` (recrea el contenedor) |
+| Actualizar el código | `git pull && docker compose up -d --build` |
+| Backup | `docker compose exec db pg_dump -U emt -Fc emt > emt_$(date +%F).dump` |
+| Consola SQL | `docker compose exec db psql -U emt -d emt` |
+
+## Ejecución local sin Docker
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -e .
+cp .env.example .env               # y rellenarlo igual que en el paso 3
+emt-collector check                # o: python -m emt_collector check
+```
+
+Para la base de datos, o bien un PostgreSQL propio (`POSTGRES_HOST`, `POSTGRES_PASSWORD`, …
+en `.env`), o bien SQLite para pruebas rápidas:
+
+```bash
+DATABASE_URL=sqlite+pysqlite:///emt.db LOG_FORMAT=console emt-collector once
+```
+
+El comando `emt-collector` sólo existe con el entorno virtual activado (o dentro del
+contenedor); fuera de él usa `python -m emt_collector …`.
+
+## Comandos disponibles
+
+`emt-collector <comando>` (en Docker: `docker compose run --rm collector <comando>`).
+
+| Comando | Qué hace | Necesita | Salida / código de salida |
+| --- | --- | --- | --- |
+| `check` | Hace login, muestra cuota diaria y consumo, y la configuración de líneas/paradas. No toca la BD. | Credenciales EMT + `EMT_LINES` y/o `EMT_STOPS` | JSON; `0` ok, `1` error de API, `2` configuración inválida |
+| `lines` | Imprime el catálogo de líneas de la EMT (ids, etiquetas, cabeceras). | Credenciales EMT | JSON |
+| `init-db` | Crea/actualiza tablas e hypertables y sale. | Base de datos | `0` |
+| `once` | Ejecuta un ciclo completo de recolección y sale. Útil para probar o para cron. | Credenciales, objetivos y BD | JSON del ciclo; `0` si `ok`/`partial`/`empty`, `1` si `failed` |
+| `run` | Proceso permanente: crea el esquema y recolecta cada `COLLECT_INTERVAL_SECONDS` (mín. 10 s). Es el comando por defecto del contenedor. | Credenciales, objetivos y BD | Logs JSON; termina limpiamente con `SIGTERM`/`Ctrl+C` |
+
+## Obtener credenciales EMT MobilityLabs
+
+1. Regístrate en <https://mobilitylabs.emtmadrid.es> (gratuito) y verifica el email.
+2. Con el email y la contraseña del portal ya puedes autenticarte (`EMT_EMAIL`,
+   `EMT_PASSWORD`). Esta modalidad "genérica" tiene una cuota diaria reducida (20.000 hits/día
+   según devuelve el propio login).
+3. **Recomendado**: en el portal, entra en *Developers Portal* → *Mis aplicaciones* → *Nueva
+   aplicación*. En el panel de la App aparecen `x-ClientId` y `passKey`; cópialos en
+   `EMT_CLIENT_ID` / `EMT_PASS_KEY` (son dos valores distintos de tu email/contraseña). La cuota
+   sube (150.000 hits/día en el momento de escribir esto) y no expones tu email/contraseña.
+4. Comprueba la cuota real con `emt-collector check`: imprime `daily_quota` y `used_today` tal
+   y como los devuelve el login.
+
+La EMT pide citar *EMT Madrid MobilityLabs* como fuente de los datos.
+
+### Errores de login habituales
+
+Si `EMT_CLIENT_ID`/`EMT_PASS_KEY` están definidos tienen prioridad sobre `EMT_EMAIL`/`EMT_PASSWORD`.
+`emt-collector check` termina con `EMT API error: login failed (code XX)` y este significado
+(observado contra la API real; la descripción suele venir vacía):
+
+| Código | HTTP | Causa |
+| --- | --- | --- |
+| `84` | 403 | `X-ClientId`/`passKey` inválidos: revisa `EMT_CLIENT_ID`/`EMT_PASS_KEY` (sin espacios ni comillas, sin intercambiarlos, copiados del panel de la App). Para descartar, comenta ambas variables y prueba con email/contraseña. |
+| `92` | 200 | Usuario no encontrado o contraseña incorrecta (`EMT_EMAIL`/`EMT_PASSWORD`). |
+| `99` | 200 | La API no recibió credenciales (`.env` no cargado o variables mal escritas). |
+
+## Configuración (.env)
+
+| Variable | Por defecto | Descripción |
+| --- | --- | --- |
+| `EMT_EMAIL` / `EMT_PASSWORD` | – | Credenciales de usuario del portal. |
+| `EMT_CLIENT_ID` / `EMT_PASS_KEY` | – | Credenciales de App (prioritarias si están). |
+| `EMT_LINES` | – | Líneas a seguir, separadas por comas (`27,45,C1`). Acepta etiqueta o id (`027`). |
+| `EMT_STOPS` | – | Paradas adicionales (ids EMT). En ellas se guardan todas las líneas que pasan. |
+| `EMT_STOPS_REFRESH_HOURS` | `24` | Frecuencia de refresco de la lista de paradas. |
+| `COLLECT_INTERVAL_SECONDS` | `60` | Periodo del scheduler (mín. 10 para `run`). |
+| `EMT_MAX_REQUESTS_PER_MINUTE` | `100` | Límite cliente de peticiones/minuto. |
+| `EMT_DAILY_REQUEST_BUDGET` | `150000` | Presupuesto diario para el aviso de cuota (se usa el menor entre este valor y la cuota devuelta por el login). |
+| `EMT_REQUEST_TIMEOUT_SECONDS` | `15` | Timeout HTTP. |
+| `EMT_MAX_RETRIES` | `4` | Reintentos ante red/5xx/429. |
+| `EMT_BASE_URL` | `https://openapi.emtmadrid.es` | Base de la API. |
+| `POSTGRES_PASSWORD` | – | Obligatoria. Con `POSTGRES_USER`/`POSTGRES_DB` (`emt`), `POSTGRES_HOST` (`localhost`; `db` en Compose) y `POSTGRES_PORT` (`5432`) forma la URL de conexión, escapando cualquier carácter. |
+| `DATABASE_URL` | – | URL SQLAlchemy completa; si está definida tiene prioridad sobre `POSTGRES_*`. También vale `sqlite+pysqlite:///emt.db` para pruebas. |
+| `DB_USE_TIMESCALE` | `true` | Crear hypertables si la extensión está disponible. |
+| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `LOG_FORMAT=console` para desarrollo. |
+
+Regla de filtrado: de las paradas descubiertas a partir de `EMT_LINES` sólo se guardan las
+llegadas de las líneas configuradas (una parada de la 27 también recibe la 45, la 147…), para
+mantener el dataset acotado. En las paradas listadas explícitamente en `EMT_STOPS` se guarda
+todo lo que pasa por ellas.
+
+## Cuota de la API y dimensionado
+
+Coste: **1 petición por parada y ciclo** (más ~3 peticiones por línea al refrescar paradas,
+una vez al día). Peticiones/día = `paradas × 86400 / COLLECT_INTERVAL_SECONDS`.
+
+| Cuota diaria | Intervalo | Paradas máximas | Ejemplo |
+| --- | --- | --- | --- |
+| 20.000 (usuario) | 60 s | ~13 | Un puñado de paradas en `EMT_STOPS` |
+| 20.000 (usuario) | 300 s | ~69 | Una línea completa (ambos sentidos) |
+| 20.000 (usuario) | 600 s | ~138 | Dos líneas completas |
+| 150.000 (App) | 60 s | ~104 | Una o dos líneas completas |
+| 150.000 (App) | 120 s | ~208 | Tres o cuatro líneas completas |
+
+Cómo saber cuántas paradas tienes: `emt-collector once` devuelve `stops_requested`, y el log
+`collector.targets_resolved` muestra `stops`. Si la proyección supera la cuota aparece el aviso
+`collector.daily_budget_exceeded` en el log (el recolector **no** se detiene solo: al agotar la
+cuota la API empezará a fallar y los ciclos quedarán registrados como gaps).
+
+## Cómo funciona un ciclo
 
 1. Al arrancar, `emt-collector run` crea el esquema (`init_schema`) y programa un job de
-   APScheduler cada `COLLECT_INTERVAL_SECONDS` (60 s) con `max_instances=1` y `coalesce=True`
-   (si un ciclo tarda más de un minuto no se solapan ejecuciones; el tick saltado queda
+   APScheduler cada `COLLECT_INTERVAL_SECONDS` con `max_instances=1` y `coalesce=True`
+   (si un ciclo tarda más que el intervalo no se solapan ejecuciones; el tick saltado queda
    registrado como gap `scheduler/job_skipped_overrun`, y los ticks perdidos por otras causas
    como `scheduler/job_missed`).
 2. Cada ciclo resuelve los **objetivos**: para cada línea de `EMT_LINES` obtiene sus paradas
@@ -82,100 +321,6 @@ Manejo de errores del cliente (`src/emt_collector/api/client.py`):
   se avisa en el log si las peticiones proyectadas superan `EMT_DAILY_REQUEST_BUDGET` o la cuota
   devuelta por el login.
 
-## Obtener credenciales EMT MobilityLabs
-
-1. Regístrate en <https://mobilitylabs.emtmadrid.es> (gratuito) y verifica el email.
-2. Con el email y la contraseña del portal ya puedes autenticarte (`EMT_EMAIL`,
-   `EMT_PASSWORD`). Esta modalidad "genérica" tiene una cuota diaria reducida (del orden de
-   20.000 hits/día según el propio login).
-3. **Recomendado**: en el portal, crea una *App* (menú *Mis aplicaciones* → nueva app). Obtendrás
-   un `X-ClientId` y un `passKey`; ponlos en `EMT_CLIENT_ID` / `EMT_PASS_KEY`. La cuota sube
-   (150.000 hits/día en el momento de escribir esto) y no expones tu email/contraseña.
-4. Comprueba la cuota real con `emt-collector check`: imprime `daily_quota` y `used_today` tal
-   y como los devuelve el login.
-
-La EMT pide citar *EMT Madrid MobilityLabs* como fuente de los datos.
-
-### Errores de login habituales
-
-Si `EMT_CLIENT_ID`/`EMT_PASS_KEY` están definidos tienen prioridad sobre `EMT_EMAIL`/`EMT_PASSWORD`.
-`emt-collector check` termina con `EMT API error: login failed (code XX)` y este significado
-(observado contra la API real; la descripción suele venir vacía):
-
-| Código | HTTP | Causa                                                                 |
-|--------|------|-----------------------------------------------------------------------|
-| `84`   | 403  | `X-ClientId`/`passKey` inválidos (revisa `EMT_CLIENT_ID`/`EMT_PASS_KEY`, sin espacios ni comillas, sin intercambiarlos). |
-| `92`   | 200  | Usuario no encontrado o contraseña incorrecta (`EMT_EMAIL`/`EMT_PASSWORD`). |
-| `99`   | 200  | La API no recibió credenciales (`.env` no cargado o variables mal escritas). |
-
-## Configuración (.env)
-
-```bash
-cp .env.example .env
-$EDITOR .env
-```
-
-| Variable | Por defecto | Descripción |
-| --- | --- | --- |
-| `EMT_EMAIL` / `EMT_PASSWORD` | – | Credenciales de usuario del portal. |
-| `EMT_CLIENT_ID` / `EMT_PASS_KEY` | – | Credenciales de App (prioritarias si están). |
-| `EMT_LINES` | – | Líneas a seguir, separadas por comas (`27,45,C1`). Acepta etiqueta o id (`027`). |
-| `EMT_STOPS` | – | Paradas adicionales. En ellas se guardan todas las líneas que pasan. |
-| `EMT_STOPS_REFRESH_HOURS` | `24` | Frecuencia de refresco de la lista de paradas. |
-| `COLLECT_INTERVAL_SECONDS` | `60` | Periodo del scheduler (mín. 10). |
-| `EMT_MAX_REQUESTS_PER_MINUTE` | `100` | Límite cliente. |
-| `EMT_DAILY_REQUEST_BUDGET` | `150000` | Presupuesto diario para el aviso de cuota. |
-| `EMT_REQUEST_TIMEOUT_SECONDS` | `15` | Timeout HTTP. |
-| `EMT_MAX_RETRIES` | `4` | Reintentos ante red/5xx. |
-| `POSTGRES_PASSWORD` | – | Obligatoria. Con `POSTGRES_USER`/`POSTGRES_DB` (`emt`) y `POSTGRES_HOST` (`localhost`; `db` en Compose) forma la URL de conexión, escapando cualquier carácter. |
-| `DATABASE_URL` | – | URL SQLAlchemy completa; si está definida tiene prioridad sobre `POSTGRES_*`. También vale `sqlite+pysqlite:///emt.db` para pruebas. |
-| `DB_USE_TIMESCALE` | `true` | Crear hypertables si la extensión está disponible. |
-| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `LOG_FORMAT=console` para desarrollo. |
-
-De las paradas descubiertas a partir de `EMT_LINES` sólo se guardan las llegadas de las líneas
-configuradas (una parada de la 27 también recibe la 45, la 147…), para mantener el dataset
-acotado. En las paradas listadas explícitamente en `EMT_STOPS` se guarda todo lo que pasa por
-ellas, aunque también pertenezcan a una línea configurada.
-
-Requisitos por comando: `init-db` sólo necesita la base de datos; `lines` sólo credenciales;
-`check` credenciales y `EMT_LINES` y/o `EMT_STOPS`; `once` y `run` además la base de datos
-(`run` valida también `COLLECT_INTERVAL_SECONDS`).
-
-## Arrancar con Docker
-
-```bash
-cp .env.example .env            # credenciales EMT + POSTGRES_PASSWORD (obligatoria)
-docker compose up -d --build    # levanta TimescaleDB + recolector
-docker compose logs -f collector
-```
-
-Primer arranque esperado (logs JSON, uno por línea):
-
-```json
-{"event":"db.ready","timescale":true,...}
-{"event":"emt.login","token_ttl_seconds":86400,"daily_quota":150000,"used_today":12,...}
-{"event":"collector.targets_resolved","stops":61,"lines":["27","45"],...}
-{"event":"cycle.end","status":"ok","stops_requested":61,"stops_ok":61,"positions_inserted":38,"arrivals_inserted":112,"duration_seconds":8.4,...}
-```
-
-Comandos útiles (dentro del contenedor o con el paquete instalado):
-
-```bash
-emt-collector check     # login, cuota y configuración; no escribe en la BD
-emt-collector once      # un único ciclo (para cron o pruebas); exit 1 si falla
-emt-collector init-db   # crear/actualizar el esquema y salir
-emt-collector lines     # catálogo de líneas en JSON
-emt-collector run       # proceso long-running (por defecto en Docker)
-```
-
-Consultar la base de datos:
-
-```bash
-docker compose exec db psql -U emt -d emt -c \
-  "SELECT status, count(*), avg(extract(epoch from finished_at-started_at))::int AS avg_s
-     FROM collection_cycles GROUP BY 1;"
-```
-
 ## Despliegue 24/7 en un VPS
 
 Cualquier VPS pequeño (1 vCPU, 1–2 GB RAM, 20+ GB disco) es suficiente.
@@ -185,10 +330,11 @@ Cualquier VPS pequeño (1 vCPU, 1–2 GB RAM, 20+ GB disco) es suficiente.
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
 
-# 2. Código y configuración
+# 2. Código y configuración: pasos 1–6 del inicio rápido
 git clone https://github.com/aiambo08/emt-madrid-collector.git
 cd emt-madrid-collector
 cp .env.example .env && nano .env      # credenciales, EMT_LINES, contraseña de Postgres
+docker compose run --rm collector check
 
 # 3. Arrancar
 docker compose up -d --build
