@@ -1,0 +1,36 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-emt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emt}
+      POSTGRES_DB: ${POSTGRES_DB:-emt}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-emt} -d ${POSTGRES_DB:-emt}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Descomenta para acceder desde fuera del host (p. ej. notebooks de análisis):
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+  collector:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://emt:emt@db:5432/emt}
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  pgdata:

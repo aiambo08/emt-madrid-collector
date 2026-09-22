@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "emt-madrid-collector"
+version = "0.1.0"
+description = "Recolector 24/7 de posiciones de buses y llegadas estimadas de la EMT de Madrid (MobilityLabs API)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27,<1",
+    "tenacity>=8.2,<10",
+    "SQLAlchemy>=2.0,<3",
+    "psycopg[binary]>=3.1,<4",
+    "APScheduler>=3.10,<4",
+    "pydantic>=2.6,<3",
+    "pydantic-settings>=2.2,<3",
+    "structlog>=24.1,<26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+emt-collector = "emt_collector.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/emt_collector"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+mypy_path = "src"
+packages = ["emt_collector"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
