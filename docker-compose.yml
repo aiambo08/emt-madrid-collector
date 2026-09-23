@@ -34,5 +34,25 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # Informes periódicos (bunching, saturación, frecuencias) en el volumen `reports`
+  # (/reports/<fecha>/ y /reports/latest.json). Opcional:
+  #   docker compose --profile analysis up -d analysis
+  #   docker compose cp analysis:/reports ./reports
+  analysis:
+    build: .
+    profiles: [analysis]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+    entrypoint: ["emt-analysis"]
+    command: ["run", "--output", "/reports", "--days", "14", "--every-hours", "24"]
+    volumes:
+      - reports:/reports
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  reports:

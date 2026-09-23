@@ -22,6 +22,7 @@ class Parameters(BaseModel):
     min_buses: int = Field(default=3, ge=2)
     near_seconds: int = Field(default=60, ge=0)
     near_metres: int = Field(default=150, gt=0)
+    vanish_seconds: int = Field(default=180, ge=0)
     bus_cooldown_seconds: int = Field(default=600, gt=0)
     max_gap_seconds: int = Field(default=90, gt=0)
     max_latency_seconds: int = Field(default=120, ge=0)

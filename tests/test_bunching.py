@@ -29,8 +29,8 @@ def at(minute: int) -> datetime:
     return START + timedelta(minutes=minute)
 
 
-def observation(minute: int, bus: int, eta: int = 0) -> Observation:
-    return Observation(ROUTE, bus, at(minute), at(minute), eta, eta * 2, False)
+def observation(minute: int, bus: int, eta: int = 0, is_head: bool = False) -> Observation:
+    return Observation(ROUTE, bus, at(minute), at(minute), eta, eta * 2, is_head)
 
 
 def history(departures: list[int], until: int = 120) -> list[Observation]:
@@ -99,10 +99,46 @@ def test_directions_lines_and_stops_do_not_mix(route: Route) -> None:
         {"is_head": True},
     ],
 )
-def test_invalid_arrivals_never_become_passages(invalid: dict[str, int | bool | None]) -> None:
+def test_invalid_arrivals_never_become_near_passages(
+    invalid: dict[str, int | bool | None],
+) -> None:
     rows = history([0, 20, 21])
     rows.append(replace(observation(22, 10), **invalid))
-    assert not detect(build_series(rows, [], PARAMETERS)[0])
+    strict = PARAMETERS.model_copy(update={"vanish_seconds": 0})
+    assert not detect(build_series(rows, [], strict)[0])
+
+
+def test_bus_that_vanishes_while_close_counts_as_a_passage() -> None:
+    rows = history([0, 20, 21])
+    rows += [observation(20, 10, 200), observation(21, 10, 100)]
+    series = build_series(rows, [], PARAMETERS)[0]
+    vanished = [p for p in series.passages if p.bus_id == 10]
+    assert len(vanished) == 1
+    assert vanished[0].at == at(21) + timedelta(seconds=100)
+    assert vanished[0].available_at == vanished[0].at
+    assert detect(series)[0].bus_ids == (2, 3, 10)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        [observation(22, 10, 100), observation(23, 10, 400)],  # still listed, further away
+        [observation(22, 10, 200)],  # last ETA above vanish_seconds
+        [observation(22, 10, 100, is_head=True)],
+        [observation(120, 10, 100)],  # no later sample of the stop
+    ],
+)
+def test_vanishing_needs_a_close_eta_and_a_following_sample(tail: list[Observation]) -> None:
+    rows = history([0, 20, 21]) + tail
+    series = build_series(rows, [], PARAMETERS)[0]
+    assert not [p for p in series.passages if p.bus_id == 10]
+
+
+def test_near_and_vanish_do_not_double_count_a_bus() -> None:
+    rows = history([0, 20, 21])
+    rows += [observation(22, 10, 30), observation(23, 10, 5)]
+    series = build_series(rows, [], PARAMETERS)[0]
+    assert len([p for p in series.passages if p.bus_id == 10]) == 1
 
 
 def test_unknown_destination_and_stale_samples_are_excluded() -> None:

@@ -33,6 +33,8 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 - [Volumen y retención](#volumen-y-retención)
 - [Detector y predictor de bus bunching](#detector-y-predictor-de-bus-bunching)
 - [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio)
+- [Optimización de frecuencias](#optimización-de-frecuencias)
+- [Validación con el histórico real](#validación-con-el-histórico-real)
 - [Desarrollo](#desarrollo)
 
 ## Funcionalidades
@@ -52,7 +54,10 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 | **Persistencia** | PostgreSQL 16 con TimescaleDB (hypertables automáticas si la extensión existe; funciona igual en Postgres normal y SQLite para pruebas). |
 | **Logging estructurado** | JSON por línea (`structlog`) con eventos `emt.login`, `emt.retry`, `emt.reauth`, `cycle.start`, `cycle.end`, `stop.failed`, `scheduler.job_missed`, … |
 | **Despliegue** | Dockerfile (usuario no root) + `docker-compose.yml` (TimescaleDB con healthcheck + recolector, volumen persistente, `restart: unless-stopped`, apagado limpio con `SIGTERM`). |
-| **CLI** | `run`, `once`, `init-db`, `check`, `lines` (ver [Comandos disponibles](#comandos-disponibles)). |
+| **CLI** | `run`, `once`, `init-db`, `check`, `lines`, `stats` (ver [Comandos disponibles](#comandos-disponibles)). |
+| **Diagnóstico del histórico** | `emt-collector stats`: cobertura temporal, ciclos esperados vs observados, gaps por tipo, rutas detectadas, pasos inferidos por día, headway mediano y ciclo estimado, con avisos sobre lo que falta para que los análisis funcionen. Sin llamadas a la API. |
+| **Compresión/retención Timescale** | `init-db`/`run` aplican políticas de compresión (`DB_COMPRESS_AFTER_DAYS`, 7 por defecto) y retención (`DB_RETENTION_DAYS`, desactivada por defecto) a las hypertables. |
+| **Análisis periódico** | `emt-analysis run`: ejecuta bunching, saturación y frecuencias sobre los últimos N días, guarda cada ejecución en su carpeta con `summary.json` y puede repetirse cada N horas (servicio Compose opcional `analysis`). |
 | **Bus bunching** | `emt-bunching`: detecta agrupamientos por línea/parada/destino, entrena un predictor a 15 minutos con evaluación temporal y genera informes HTML, JSON y CSV. Incluye demo sintética sin credenciales. |
 | **Saturación del servicio** | `emt-saturation`: marca intervalos entre buses ≥ 1,5× la mediana de la ruta y hora (mín. 12 min), predice la probabilidad de que la siguiente llegada cierre uno y los minutos de espera; backtest cronológico, informe HTML y demo sintética. No mide ocupación. |
 | **Optimización de frecuencias** | `emt-frequency`: por línea/parada/sentido y hora local calcula intervalo medio, regularidad (CV), espera media de pasajero y buses en servicio implícitos (ciclo / intervalo); propone redistribuir las mismas horas-bus entre franjas para minimizar la espera ponderada por demanda (proxy, uniforme o CSV propio). Informe HTML comparando actual vs propuesto y demo sintética. |
@@ -200,7 +205,18 @@ contenedor); fuera de él usa `python -m emt_collector …`.
 | `lines` | Imprime el catálogo de líneas de la EMT (ids, etiquetas, cabeceras). | Credenciales EMT | JSON |
 | `init-db` | Crea/actualiza tablas e hypertables y sale. | Base de datos | `0` |
 | `once` | Ejecuta un ciclo completo de recolección y sale. Útil para probar o para cron. | Credenciales, objetivos y BD | JSON del ciclo; `0` si `ok`/`partial`/`empty`, `1` si `failed` |
-| `run` | Proceso permanente: crea el esquema y recolecta cada `COLLECT_INTERVAL_SECONDS` (mín. 10 s). Es el comando por defecto del contenedor. | Credenciales, objetivos y BD | Logs JSON; termina limpiamente con `SIGTERM`/`Ctrl+C` |
+| `run` | Proceso permanente: crea el esquema, aplica las políticas Timescale y recolecta cada `COLLECT_INTERVAL_SECONDS` (mín. 10 s). Es el comando por defecto del contenedor. | Credenciales, objetivos y BD | Logs JSON; termina limpiamente con `SIGTERM`/`Ctrl+C` |
+| `stats [--days N]` | Diagnóstico del histórico almacenado en los últimos N días (30 por defecto): ver [Validación con el histórico real](#validación-con-el-histórico-real). | Base de datos | JSON; `0` sin avisos, `3` con avisos (`hints`) |
+
+Análisis (instalados con `pip install -e ".[analysis]"`; en Docker ya están en la imagen:
+`docker compose run --rm --entrypoint emt-bunching collector demo --output /reports/demo`):
+
+| Comando | Qué hace |
+| --- | --- |
+| `emt-bunching demo\|analyze\|predict` | [Detector y predictor de bus bunching](#detector-y-predictor-de-bus-bunching) |
+| `emt-saturation demo\|analyze\|predict` | [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio) |
+| `emt-frequency demo\|analyze` | [Optimización de frecuencias](#optimización-de-frecuencias) |
+| `emt-analysis run` | Los tres `analyze` de una vez (opcionalmente cada N horas): ver [Validación con el histórico real](#validación-con-el-histórico-real) |
 
 ## Obtener credenciales EMT MobilityLabs
 
@@ -247,6 +263,8 @@ Si `EMT_CLIENT_ID`/`EMT_PASS_KEY` están definidos tienen prioridad sobre `EMT_E
 | `POSTGRES_PASSWORD` | – | Obligatoria. Con `POSTGRES_USER`/`POSTGRES_DB` (`emt`), `POSTGRES_HOST` (`localhost`; `db` en Compose) y `POSTGRES_PORT` (`5432`) forma la URL de conexión, escapando cualquier carácter. |
 | `DATABASE_URL` | – | URL SQLAlchemy completa; si está definida tiene prioridad sobre `POSTGRES_*`. También vale `sqlite+pysqlite:///emt.db` para pruebas. |
 | `DB_USE_TIMESCALE` | `true` | Crear hypertables si la extensión está disponible. |
+| `DB_COMPRESS_AFTER_DAYS` | `7` | Comprimir chunks de `bus_positions`/`arrival_estimates` con más de N días (Timescale). `0` quita la política. |
+| `DB_RETENTION_DAYS` | `0` | **Borrar** datos con más de N días (Timescale). `0` = sin retención: el histórico se conserva entero. |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `LOG_FORMAT=console` para desarrollo. |
 
 Regla de filtrado: de las paradas descubiertas a partir de `EMT_LINES` sólo se guardan las
@@ -266,6 +284,12 @@ una vez al día). Peticiones/día = `paradas × 86400 / COLLECT_INTERVAL_SECONDS
 | 20.000 (usuario) | 600 s | ~138 | Dos líneas completas |
 | 150.000 (App) | 60 s | ~104 | Una o dos líneas completas |
 | 150.000 (App) | 120 s | ~208 | Tres o cuatro líneas completas |
+
+La cuota real la devuelve el login (`daily_quota` en `emt-collector check`); dimensiona con ese
+valor, no con el de la tabla. Los análisis necesitan muestreo de 60 s, así que con la App es
+preferible **ampliar paradas manteniendo el intervalo**: por ejemplo las ~84 paradas de las
+líneas 27 y 45 (`EMT_LINES=27,45`, `EMT_STOPS=`) suponen ~121.000 hits/día, dentro de los
+150.000. Con cuota de usuario (20.000) hay que quedarse en `EMT_STOPS` con ≤ 13 paradas.
 
 Cómo saber cuántas paradas tienes: `emt-collector once` devuelve `stops_requested`, y el log
 `collector.targets_resolved` muestra `stops`. Si la proyección supera la cuota aparece el aviso
@@ -486,20 +510,17 @@ buses). Orden de magnitud por parada seguida: ~2–4 filas/min en `arrival_estim
 | `bus_positions` | ~150–250 k | 0,7–1,5 GB |
 | `collection_cycles` | 1.440 | despreciable |
 
-Recomendaciones con TimescaleDB (opcional, no lo activa el recolector):
+Con TimescaleDB, `init-db` y `run` aplican (y reaplican de forma idempotente al cambiar el
+`.env`) estas políticas a `bus_positions` y `arrival_estimates`:
 
-```sql
--- Compresión de chunks de más de 7 días (reduce ~10x)
-ALTER TABLE arrival_estimates SET (timescaledb.compress, timescaledb.compress_segmentby = 'line, stop_id');
-SELECT add_compression_policy('arrival_estimates', INTERVAL '7 days');
-ALTER TABLE bus_positions SET (timescaledb.compress, timescaledb.compress_segmentby = 'line, bus_id');
-SELECT add_compression_policy('bus_positions', INTERVAL '7 days');
+- **Compresión** de chunks con más de `DB_COMPRESS_AFTER_DAYS` días (7 por defecto; segmentada
+  por `line, bus_id` y `line, stop_id`). Las consultas y los análisis siguen funcionando sobre
+  datos comprimidos; el ahorro típico documentado por Timescale es de un orden de magnitud.
+- **Retención**: borrado de datos con más de `DB_RETENTION_DAYS` días. Desactivada por defecto
+  (`0`) porque el histórico es el objetivo del proyecto; actívala solo si el disco manda.
 
--- Retención (sólo si no quieres histórico ilimitado)
-SELECT add_retention_policy('arrival_estimates', INTERVAL '365 days');
-```
-
-Sin Timescale, planifica particionado o archivado (p. ej. `COPY … TO` Parquet mensual) cuando
+El log `db.timescale_policies` muestra los valores aplicados; `0` en cualquiera de las dos quita
+la política. Sin Timescale, planifica particionado o archivado (p. ej. `COPY … TO` Parquet mensual) cuando
 las tablas superen unos pocos GB.
 
 ## Detector y predictor de bus bunching
@@ -536,7 +557,11 @@ Si faltan datos, `analyze` genera el informe del detector y explica por qué no 
 Necesita al menos 7 días entre instantes etiquetados y ambas clases en entrenamiento y
 evaluación. No utiliza el modelo sintético para predecir con datos reales.
 
-Los pasos se **infieren de ETAs y distancia a parada**; no son pasos confirmados por un sensor.
+Los pasos se **infieren de ETAs y distancia a parada** (ETA ≤ 60 s o ≤ 150 m), y además cuando
+un bus **desaparece** de la parada tras anunciar una ETA ≤ `--vanish-seconds` (180 s por
+defecto; `0` desactiva esta vía): el paso se sitúa en `última muestra + ETA`. Ambas vías
+comparten el cooldown por bus, y `emt-collector stats` informa de cuántos pasos vienen de cada
+una (`passages` vs `vanish_passages`). No son pasos confirmados por un sensor.
 Sin observaciones regulares, no se puede distinguir un hueco del servicio de uno de datos.
 Conserva el muestreo de 60 segundos en pocas paradas estables para esta fase.
 
@@ -596,6 +621,68 @@ Salidas: `report.html`, `summary.json`, `plan.csv` y `demand.csv`. Requiere ≥ 
 regularización de la oferta, no una recomendación operativa. Detalles y límites en
 [docs/frequency.md](docs/frequency.md).
 
+## Validación con el histórico real
+
+Las demos son sintéticas: **ninguna métrica de los informes demo dice nada del servicio real**.
+La validación se hace en dos pasos sobre tu base de datos, sin consumir cuota EMT.
+
+**1. Diagnóstico** (Docker: `docker compose run --rm collector stats`; local: `emt-collector stats`):
+
+```json
+{
+ "window": {"start": "…", "end": "…"},
+ "history": {"arrivals": 81234, "days": 6.9, "stops": 4, "lines": 6, "buses": 210, "positions": 45210, …},
+ "cycles": {"total": 9870, "by_status": {"ok": 9850, "partial": 20}, "expected_per_day": 1440.0,
+            "observed_per_day": 1430.4, "requests_per_day": 7180, "gaps_by_kind": {"network": 20}, …},
+ "routes": [{"line": "27", "stop_id": "1170", "destination": "PLAZA CASTILLA", "passages": 612,
+             "vanish_passages": 140, "passages_per_day": 88.7, "median_headway_minutes": 6.0,
+             "cycle_returns": 35, "median_cycle_minutes": 96.0, …}, …],
+ "hints": ["Solo 6.9 días de histórico; los modelos necesitan al menos 7."]
+}
+```
+
+Qué mirar:
+
+| Campo | Significado | Qué hacer si va mal |
+| --- | --- | --- |
+| `history.days`, `hints` sobre días | Ventana con datos. | Esperar: bunching y saturación exigen ≥ 7 días. |
+| `cycles.observed_per_day` vs `expected_per_day` | Ciclos realmente ejecutados por día. | Si es < 90 %: el recolector estuvo parado o salta ciclos (`scheduler.job_skipped_overrun`): menos paradas o más intervalo. |
+| `cycles.by_status`, `gaps_by_kind` | Ciclos fallidos/parciales y su causa (`network`, `api`, `auth`, `db`, `scheduler`…). | > 5 % → revisar `collection_gaps` y los logs. |
+| `cycles.requests_per_day` | Consumo real de cuota. | Debe quedar por debajo de `daily_quota` del login. |
+| `routes[].passages_per_day` | Pasos inferidos por día en cada línea/parada/sentido. | < 40 → pocos headways por hora; elegir paradas con más frecuencia o sumar paradas de la misma ruta. |
+| `routes[].vanish_passages` | Pasos inferidos solo por desaparición del bus. | Si son casi todos, la parada recibe ETAs poco fiables: probar otra parada o ajustar `--vanish-seconds`. |
+| `routes[].cycle_returns`, `median_cycle_minutes` | Veces que el mismo bus vuelve a pasar y ciclo estimado. | < 10 → `emt-frequency` no podrá estimar buses en servicio; hace falta más histórico o paradas de ambos sentidos. |
+
+El comando termina con código `3` mientras haya avisos, así que sirve como chequeo en cron.
+
+**2. Análisis** cuando `hints` ya no avise de días o cobertura (sustituye la fecha por
+`history.first_sample`):
+
+```bash
+emt-analysis run --output reports --days 14          # bunching + saturación + frecuencias
+# o cada uno por separado, con todos sus parámetros:
+emt-bunching analyze   --start 2026-09-23T15:00:00Z --output reports/bunching-real
+emt-saturation analyze --start 2026-09-23T15:00:00Z --output reports/saturation-real
+emt-frequency analyze  --start 2026-09-23T15:00:00Z --output reports/frequency-real
+```
+
+`emt-analysis run` escribe `reports/<fecha>Z/{bunching,saturation,frequency}/`, un
+`summary.json` por ejecución (estado `ok`, `insufficient_data` o `error` de cada análisis) y
+`reports/latest.json` apuntando a la última; no sobreescribe ejecuciones anteriores. Acepta
+`--stop` (repetible), `--only bunching|saturation|frequency` y `--every-hours N` para quedarse
+en bucle. Para tenerlo siempre en marcha junto al recolector:
+
+```bash
+docker compose --profile analysis up -d analysis      # cada 24 h sobre los últimos 14 días
+docker compose cp analysis:/reports ./reports         # traer los informes al host
+```
+
+Con los primeros informes reales compara frente a la demo: número de rutas y observaciones,
+episodios de bunching detectados y su hora, proporción de intervalos saturados por hora,
+métricas del backtest frente al baseline (si el modelo no supera al baseline, no lo uses) y
+rutas descartadas por `emt-frequency`. Lo esperable es tener que recalibrar umbrales
+(`--vanish-seconds`, cooldown, 1,5× mediana) con los primeros datos.
+
 ## Desarrollo
 
 ```bash
@@ -618,12 +705,16 @@ src/emt_collector/
 ├── api/client.py      # EMTClient: login, reauth, backoff, rate limit, endpoints
 ├── api/models.py      # modelos pydantic de las respuestas
 ├── db/models.py       # tablas SQLAlchemy
-├── db/repository.py   # inserts idempotentes, ciclos, gaps, hypertables
+├── db/repository.py   # inserts idempotentes, ciclos, gaps, hypertables, políticas Timescale
 ├── collector.py       # lógica de un ciclo de recolección
 ├── scheduler.py       # APScheduler + señales
 ├── config.py          # Settings (pydantic-settings, .env)
 ├── logging_setup.py   # structlog
-└── __main__.py        # CLI: run | once | init-db | check | lines
+├── __main__.py        # CLI: run | once | init-db | check | lines | stats
+├── analysis/          # stats.py (diagnóstico del histórico) y cli.py (emt-analysis run)
+├── bunching/          # data.py (carga), detector.py (pasos/episodios), features, model, report, cli
+├── saturation/        # headways, etiquetas, modelos, report, cli (emt-saturation)
+└── frequency/         # servicio observado, ciclo, optimizador, report, cli (emt-frequency)
 ```
 
 ## Licencia y atribución

@@ -4,14 +4,21 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 import structlog
 from pydantic import ValidationError
 
+from emt_collector.analysis.stats import default_window, history_stats
 from emt_collector.api.client import EMTClient, EMTError
 from emt_collector.collector import Collector
 from emt_collector.config import ConfigError, Settings
-from emt_collector.db.repository import Repository, init_schema, make_engine
+from emt_collector.db.repository import (
+    Repository,
+    apply_timescale_policies,
+    init_schema,
+    make_engine,
+)
 from emt_collector.logging_setup import configure_logging
 from emt_collector.scheduler import run_forever
 
@@ -39,12 +46,16 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("init-db", help="create tables (and Timescale hypertables) and exit")
     sub.add_parser("check", help="login, print quota info and resolved targets, no DB writes")
     sub.add_parser("lines", help="print the EMT line catalogue as JSON")
+    stats = sub.add_parser(
+        "stats", help="coverage and quality of the stored history (no API calls)"
+    )
+    stats.add_argument("--days", type=int, default=30, help="window ending now (default 30)")
     return parser
 
 
 NEEDS_API = {"lines", "check", "once", "run"}
 NEEDS_TARGETS = {"check", "once", "run"}
-NEEDS_DB = {"init-db", "once", "run"}
+NEEDS_DB = {"init-db", "once", "run", "stats"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,8 +113,23 @@ def _run(args: argparse.Namespace) -> int:
     engine = make_engine(database_url)
     timescale = init_schema(engine, use_timescale=settings.db_use_timescale)
     log.info("db.ready", url=_redact(database_url), timescale=timescale)
+    if timescale and args.command in {"init-db", "run"}:
+        apply_timescale_policies(
+            engine, settings.db_compress_after_days, settings.db_retention_days
+        )
     if args.command == "init-db":
         return 0
+    if args.command == "stats":
+        start, end = default_window(args.days, datetime.now(timezone.utc))
+        report = history_stats(
+            engine,
+            start,
+            end,
+            settings.collect_interval_seconds,
+            settings.emt_daily_request_budget,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=1))
+        return 0 if not report["hints"] else 3
 
     repo = Repository(engine)
     with build_client(settings) as client:
