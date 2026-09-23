@@ -58,14 +58,23 @@ def predict(series: list[Series], model: ForecastModel, at: datetime) -> list[Pr
     return result
 
 
-def table(headers: list[str], rows: list[list[str]], caption: str, ident: str = "") -> str:
+EMPTY_TABLE = "Sin filas para este periodo."
+
+
+def table(
+    headers: list[str],
+    rows: list[list[str]],
+    caption: str,
+    ident: str = "",
+    empty: str = EMPTY_TABLE,
+) -> str:
     head = "".join(f'<th scope="col">{escape(cell)}</th>' for cell in headers)
     body = "".join(
         f'<tr data-line="{escape(row[0], quote=True)}">'
         + "".join(f"<td>{escape(cell)}</td>" for cell in row)
         + "</tr>"
         for row in rows
-    )
+    ) or (f'<tr class="a-table__empty"><td colspan="{len(headers)}">{escape(empty)}</td></tr>')
     identity = f' id="{escape(ident, quote=True)}"' if ident else ""
     return (
         f'<div class="a-table-scroll"><table class="a-table"{identity}>'

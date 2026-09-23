@@ -952,6 +952,12 @@ details.a-disclosure[open] > summary::before {
 
 /* ---------- empty and error states ---------- */
 
+.a-table__empty td {
+  text-align: center;
+  color: rgb(var(--text-secondary));
+  padding: calc(var(--unit) * 4);
+}
+
 .a-empty,
 .a-error {
   border: 1px dashed rgb(var(--border-primary));
@@ -1089,12 +1095,42 @@ details.a-disclosure[open] > summary::before {
   .a-table-scroll,
   .a-diagram {
     box-shadow: none;
+  }
+
+  .a-panel,
+  .a-diagram,
+  .a-grid {
     break-inside: avoid;
   }
 
   .a-section {
+    break-inside: auto;
+    margin-top: 16px;
+  }
+
+  .a-section__title,
+  .a-panel__title,
+  .a-table caption {
+    break-after: avoid;
+  }
+
+  .a-table-scroll {
+    overflow: visible;
+    border-radius: 0;
+  }
+
+  .a-table thead {
+    display: table-header-group;
+  }
+
+  .a-table tr {
     break-inside: avoid;
-    margin-top: 24px;
+  }
+
+  select[data-a-filter],
+  label[for="line-filter"],
+  details.a-chart__data {
+    display: none !important;
   }
 
   [hidden].a-print-reveal {
