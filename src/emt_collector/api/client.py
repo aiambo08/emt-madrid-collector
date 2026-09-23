@@ -24,7 +24,7 @@ log = structlog.get_logger(__name__)
 LOGIN_PATH = "/v1/mobilitylabs/user/login/"
 LINES_INFO_PATH = "/v2/transport/busemtmad/lines/info/{dateref}/"
 LINE_STOPS_PATH = "/v1/transport/busemtmad/lines/{line}/stops/{direction}/"
-STOP_ARRIVES_PATH = "/v2/transport/busemtmad/stops/{stop}/arrives/{line}/"
+STOP_ARRIVES_PATH = "/v2/transport/busemtmad/stops/{stop}/arrives/"
 
 OK_CODES = {"00", "01"}
 # Codes MobilityLabs returns for a missing/expired/invalid accessToken.
@@ -325,7 +325,9 @@ class EMTClient:
         return LineStops(line=str(item.get("line", line)), stops=stops)
 
     def stop_arrivals(self, stop: str, line: str | None = None) -> ArrivalsResponse:
-        path = STOP_ARRIVES_PATH.format(stop=stop, line=line or "")
+        path = STOP_ARRIVES_PATH.format(stop=stop)
+        if line:
+            path = f"{path}{line}/"
         body = self._request("POST", path, json=ARRIVES_BODY)
         _raise_for_code(body)
         return ArrivalsResponse.model_validate(body)
