@@ -34,7 +34,7 @@ def test_login_and_arrivals_send_token(make_client: Callable[..., EMTClient]) ->
             return httpx.Response(200, json=LOGIN_OK)
         assert req.headers["accessToken"] == "tok-1"
         assert req.method == "POST"
-        assert req.url.path == "/v2/transport/busemtmad/stops/62/arrives//"
+        assert req.url.path == "/v2/transport/busemtmad/stops/62/arrives/"
         return httpx.Response(200, json=arrivals_response([arrive("27", "62", 540)]))
 
     client = make_client(handler)
