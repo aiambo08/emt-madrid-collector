@@ -55,6 +55,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 | **CLI** | `run`, `once`, `init-db`, `check`, `lines` (ver [Comandos disponibles](#comandos-disponibles)). |
 | **Bus bunching** | `emt-bunching`: detecta agrupamientos por línea/parada/destino, entrena un predictor a 15 minutos con evaluación temporal y genera informes HTML, JSON y CSV. Incluye demo sintética sin credenciales. |
 | **Saturación del servicio** | `emt-saturation`: marca intervalos entre buses ≥ 1,5× la mediana de la ruta y hora (mín. 12 min), predice la probabilidad de que la siguiente llegada cierre uno y los minutos de espera; backtest cronológico, informe HTML y demo sintética. No mide ocupación. |
+| **Optimización de frecuencias** | `emt-frequency`: por línea/parada/sentido y hora local calcula intervalo medio, regularidad (CV), espera media de pasajero y buses en servicio implícitos (ciclo / intervalo); propone redistribuir las mismas horas-bus entre franjas para minimizar la espera ponderada por demanda (proxy, uniforme o CSV propio). Informe HTML comparando actual vs propuesto y demo sintética. |
 
 ## Requisitos previos
 
@@ -566,6 +567,34 @@ emt-saturation predict --model reports/saturation/model.json
 Necesita al menos 7 días de histórico con muestreo de 60 s; con menos, `analyze` genera el
 informe descriptivo y explica por qué no ha entrenado. **No es una medida de pasajeros**: lee
 [docs/saturation.md](docs/saturation.md) antes de interpretar las probabilidades.
+
+## Optimización de frecuencias
+
+`emt-frequency` convierte el histórico en un **cuadro de oferta observada** por línea, parada,
+sentido y hora local, y propone un reparto alternativo de la misma flota:
+
+- **Servicio observado:** intervalo medio `H̄`, coeficiente de variación `CV`, tasa de intervalos
+  saturados y espera media de un pasajero que llega al azar `H̄ · (1 + CV²) / 2`.
+- **Buses en servicio:** el tiempo de ciclo se estima como la mediana del tiempo que tarda el
+  mismo bus en volver a pasar por la parada en el mismo sentido; `buses = ciclo / H̄`.
+- **Propuesta:** con las mismas horas-bus totales, asigna buses enteros a cada franja (greedy
+  por ganancia marginal, óptimo para este objetivo convexo) minimizando la espera ponderada por
+  demanda, con intervalo planificado acotado (3–20 min por defecto). También muestra la espera
+  que se alcanzaría solo con regularidad (`CV` objetivo), para comparar mover buses frente a
+  corregir bunching.
+- **Demanda:** la API no da pasajeros. `--demand proxy` (buses observados/día × (1 + tasa de
+  saturación)), `--demand uniform` o `--demand-csv perfil.csv` con columnas `hour,weight[,line]`.
+
+```bash
+pip install -e ".[analysis]"
+emt-frequency demo --output reports/frequency-demo                       # datos sintéticos
+emt-frequency analyze --start 2026-09-24T00:00:00Z --output reports/frequency --demand-csv demanda.csv
+```
+
+Salidas: `report.html`, `summary.json`, `plan.csv` y `demand.csv`. Requiere ≥ 3 días por ruta y
+≥ 5 intervalos completos por hora; sin pesos de demanda externos el resultado es un ejercicio de
+regularización de la oferta, no una recomendación operativa. Detalles y límites en
+[docs/frequency.md](docs/frequency.md).
 
 ## Desarrollo
 
