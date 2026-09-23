@@ -76,6 +76,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--max-gap-seconds", type=int, default=90)
         command.add_argument("--near-seconds", type=int, default=60)
         command.add_argument("--near-metres", type=int, default=150)
+        command.add_argument("--vanish-seconds", type=int, default=180)
     return root
 
 
@@ -124,6 +125,7 @@ def run(args: argparse.Namespace) -> int:
         max_gap_seconds=args.max_gap_seconds,
         near_seconds=args.near_seconds,
         near_metres=args.near_metres,
+        vanish_seconds=args.vanish_seconds,
     )
     series = build_series(observations, gaps, parameters)
     intervals = {item.route: headways(item) for item in series}

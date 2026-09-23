@@ -188,6 +188,9 @@ def train_model(
     boundary = times[int(len(times) * 0.7)]
     train = [row for row in ordered if row.label_end < boundary]
     test = [row for row in ordered if row.at >= boundary]
+    if not train:
+        raise ValueError("Entrenamiento insuficiente: ninguna ventana etiquetada antes del corte.")
+    train_labels_end = max(row.label_end for row in train)
     keys = sorted({(row.route.line, row.route.stop_id, row.route.destination) for row in train})
     if any((row.route.line, row.route.stop_id, row.route.destination) not in keys for row in test):
         raise ValueError(
@@ -195,7 +198,7 @@ def train_model(
         )
     reference = [
         item
-        for item in build_reference([h for h in intervals if h.available_at < boundary])
+        for item in build_reference([h for h in intervals if h.available_at < train_labels_end])
         if (item.line, item.stop_id, item.destination) in keys
     ]
     if {(r.line, r.stop_id, r.destination) for r in reference} != set(keys):
@@ -239,7 +242,7 @@ def train_model(
     evaluation = Evaluation(
         train_start=train[0].at,
         train_end=train[-1].at,
-        train_labels_end=max(row.label_end for row in train),
+        train_labels_end=train_labels_end,
         test_start=test[0].at,
         test_end=test[-1].at,
         train_samples=len(train),

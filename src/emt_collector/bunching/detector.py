@@ -47,26 +47,8 @@ def build_series(
     for route, rows in sorted(grouped.items()):
         rows.sort(key=lambda row: (row.available_at, row.sample_ts, row.bus_id))
         times = sorted({row.available_at for row in rows})
-        passages = []
-        last_near: dict[int, datetime] = {}
-        for row in rows:
-            if (
-                row.is_head
-                or row.eta is None
-                or not 0 <= row.eta <= parameters.near_seconds
-                or row.distance_m is None
-                or not 0 <= row.distance_m <= parameters.near_metres
-            ):
-                continue
-            previous = last_near.get(row.bus_id)
-            last_near[row.bus_id] = max(previous, row.sample_ts) if previous else row.sample_ts
-            if (
-                previous
-                and (row.sample_ts - previous).total_seconds() <= parameters.bus_cooldown_seconds
-            ):
-                continue
-            at = row.sample_ts + timedelta(seconds=row.eta)
-            passages.append(Passage(route, row.bus_id, at, max(at, row.available_at)))
+        passages = _near_passages(route, rows, parameters)
+        passages.extend(_vanish_passages(route, rows, passages, parameters))
         passages.sort(key=lambda passage: (passage.at, passage.bus_id))
         relevant_gaps = sorted(
             gap.at
@@ -93,6 +75,102 @@ def build_series(
             )
         )
     return result
+
+
+def _near_passages(route: Route, rows: list[Observation], parameters: Parameters) -> list[Passage]:
+    """A bus is about to arrive: ETA and distance both under the `near_*` thresholds."""
+    passages = []
+    last_near: dict[int, datetime] = {}
+    for row in rows:
+        if (
+            row.is_head
+            or row.eta is None
+            or not 0 <= row.eta <= parameters.near_seconds
+            or row.distance_m is None
+            or not 0 <= row.distance_m <= parameters.near_metres
+        ):
+            continue
+        previous = last_near.get(row.bus_id)
+        last_near[row.bus_id] = max(previous, row.sample_ts) if previous else row.sample_ts
+        if (
+            previous
+            and (row.sample_ts - previous).total_seconds() <= parameters.bus_cooldown_seconds
+        ):
+            continue
+        at = row.sample_ts + timedelta(seconds=row.eta)
+        passages.append(Passage(route, row.bus_id, at, max(at, row.available_at)))
+    return passages
+
+
+def _vanish_passages(
+    route: Route, rows: list[Observation], known: list[Passage], parameters: Parameters
+) -> list[Passage]:
+    """A bus that was close and disappears from the next sample of the stop has passed.
+
+    With one sample per minute a bus often jumps from ETA 90 s to gone, never producing a
+    `near` sample. Its last ETA (bounded by `vanish_seconds`) dates the passage; the passage
+    becomes known once the next sample of the route, without that bus, is available.
+    """
+    if parameters.vanish_seconds <= 0:
+        return []
+    cooldown = timedelta(seconds=parameters.bus_cooldown_seconds)
+    samples = sorted({row.sample_ts for row in rows})
+    available: dict[datetime, datetime] = {}
+    for row in rows:
+        available[row.sample_ts] = max(
+            available.get(row.sample_ts, row.available_at), row.available_at
+        )
+    passed_at: dict[int, list[datetime]] = defaultdict(list)
+    for passage in known:
+        passed_at[passage.bus_id].append(passage.at)
+    visits: dict[int, list[Observation]] = defaultdict(list)
+    for row in sorted(rows, key=lambda row: row.sample_ts):
+        if row.is_head or row.eta is None or row.eta < 0:
+            continue
+        visits[row.bus_id].append(row)
+    groups: list[list[Observation]] = []
+    for seen in visits.values():
+        for row in seen:
+            if (
+                groups
+                and groups[-1][-1].bus_id == row.bus_id
+                and (row.sample_ts - groups[-1][-1].sample_ts <= cooldown)
+            ):
+                groups[-1].append(row)
+            else:
+                groups.append([row])
+    passages: list[Passage] = []
+    for visit in groups:
+        passage = _vanished(
+            route, visit, samples, available, passed_at[visit[0].bus_id], parameters
+        )
+        if passage is not None:
+            passages.append(passage)
+    return passages
+
+
+def _vanished(
+    route: Route,
+    visit: list[Observation],
+    samples: list[datetime],
+    available: dict[datetime, datetime],
+    passed: list[datetime],
+    parameters: Parameters,
+) -> Passage | None:
+    last = visit[-1]
+    if last.eta is None or last.eta > parameters.vanish_seconds:
+        return None
+    at = last.sample_ts + timedelta(seconds=last.eta)
+    cooldown = timedelta(seconds=parameters.bus_cooldown_seconds)
+    if any(visit[0].sample_ts - cooldown <= when <= at + cooldown for when in passed):
+        return None
+    index = bisect_right(samples, last.sample_ts)
+    if index >= len(samples):
+        return None
+    following = samples[index]
+    if (following - last.sample_ts).total_seconds() > parameters.max_gap_seconds:
+        return None
+    return Passage(route, last.bus_id, at, max(at, available[following]))
 
 
 def detect(series: Series) -> list[Event]:
