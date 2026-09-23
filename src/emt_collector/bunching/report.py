@@ -140,6 +140,11 @@ def write_outputs(
         else "HISTÓRICO DE LA BASE DE DATOS"
     )
     body = (
+        "<style>@media screen and (max-width:640px){"
+        ".a-panel[data-a-chart]{overflow-x:auto}"
+        ".a-panel[data-a-chart] .a-chart{min-width:640px}"
+        ".a-chart,.a-chart__band{touch-action:pan-x pan-y}"
+        "}</style>"
         f'<section class="a-section"><div class="a-callout a-callout--risk">{label}</div>'
         f'<p class="a-prose">Periodo: {local(start)} → {local(end)} (fin exclusivo). '
         "Horas en Europe/Madrid, incluido desplazamiento UTC.</p>"
@@ -215,11 +220,13 @@ def write_outputs(
             f"{local(example.previous_passage)}. Primer bus del grupo: {local(example.start)}. "
             f"{len(example.bus_ids)} buses en {example.span_seconds / 60:.1f} min después de "
             f"{example.gap_seconds / 60:.1f} min de intervalo.</p>"
-            '<figure class="a-panel" data-a-chart="line" data-a-chart-unit="%">'
+            '<figure class="a-panel" data-a-chart="line" data-a-chart-unit="%" tabindex="0">'
             '<figcaption class="a-panel__title">Riesgo antes y después del episodio</figcaption>'
             '<p class="a-section__note">Hora de Madrid: '
             f"{local(example.start - timedelta(minutes=30))} → "
             f"{local(example.start + timedelta(minutes=15))}.</p>"
+            '<p class="a-section__note">En pantallas estrechas, desplaza el gráfico '
+            "horizontalmente o abre su tabla de datos.</p>"
             + table(
                 ["Hora (Madrid)", "Probabilidad", "Etiqueta (0 o 100%)"],
                 [
@@ -258,7 +265,7 @@ def write_outputs(
             if group_line == line
         ]
         body += (
-            '<figure class="a-panel" data-a-chart="bar" data-a-chart-unit="%">'
+            '<figure class="a-panel" data-a-chart="bar" data-a-chart-unit="%" tabindex="0">'
             f'<figcaption class="a-panel__title">Línea {escape(line)}</figcaption>'
             + table(
                 ["Hora", "Riesgo estimado", "Frecuencia observada"], chart_rows, f"Línea {line}"
