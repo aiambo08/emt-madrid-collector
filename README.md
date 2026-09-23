@@ -32,6 +32,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 - [Fiabilidad del dataset](#fiabilidad-del-dataset-gaps-idempotencia-logs)
 - [Volumen y retención](#volumen-y-retención)
 - [Detector y predictor de bus bunching](#detector-y-predictor-de-bus-bunching)
+- [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio)
 - [Desarrollo](#desarrollo)
 
 ## Funcionalidades
@@ -53,6 +54,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 | **Despliegue** | Dockerfile (usuario no root) + `docker-compose.yml` (TimescaleDB con healthcheck + recolector, volumen persistente, `restart: unless-stopped`, apagado limpio con `SIGTERM`). |
 | **CLI** | `run`, `once`, `init-db`, `check`, `lines` (ver [Comandos disponibles](#comandos-disponibles)). |
 | **Bus bunching** | `emt-bunching`: detecta agrupamientos por línea/parada/destino, entrena un predictor a 15 minutos con evaluación temporal y genera informes HTML, JSON y CSV. Incluye demo sintética sin credenciales. |
+| **Saturación del servicio** | `emt-saturation`: marca intervalos entre buses ≥ 1,5× la mediana de la ruta y hora (mín. 12 min), predice la probabilidad de que la siguiente llegada cierre uno y los minutos de espera; backtest cronológico, informe HTML y demo sintética. No mide ocupación. |
 
 ## Requisitos previos
 
@@ -538,6 +540,32 @@ Sin observaciones regulares, no se puede distinguir un hueco del servicio de uno
 Conserva el muestreo de 60 segundos en pocas paradas estables para esta fase.
 
 **[Guía completa: Docker, datos reales, parámetros, evaluación y limitaciones](docs/bunching.md)**.
+
+## Predicción de saturación del servicio
+
+La API de EMT no informa de la ocupación, así que la tercera fase usa un **proxy**: un intervalo
+entre buses muy superior al habitual concentra la demanda en el bus siguiente. `emt-saturation`
+reutiliza los pasos inferidos de la fase anterior y no consume cuota EMT.
+
+- **Etiqueta:** intervalo saturado si `headway ≥ max(1,5 × mediana(ruta, hora local), 12 min)`.
+  La mediana se calcula por línea, parada, destino y hora de Madrid, con respaldo en la mediana
+  de la ruta cuando hay menos de 5 intervalos en esa hora.
+- **Modelos:** regresión logística (probabilidad de que la siguiente llegada cierre un intervalo
+  saturado) y regresión ridge (minutos de espera hasta esa llegada), con features causales,
+  referencia horaria y evaluación en orden temporal frente a baselines por línea/hora.
+- **Salidas:** informe HTML autónomo, `summary.json`, `headways.json`, `backtest.csv`,
+  `predictions.json` y `model.json`.
+
+```bash
+pip install -e ".[analysis]"
+emt-saturation demo --output reports/saturation-demo                     # datos sintéticos
+emt-saturation analyze --start 2026-09-24T00:00:00Z --output reports/saturation   # tu histórico
+emt-saturation predict --model reports/saturation/model.json
+```
+
+Necesita al menos 7 días de histórico con muestreo de 60 s; con menos, `analyze` genera el
+informe descriptivo y explica por qué no ha entrenado. **No es una medida de pasajeros**: lee
+[docs/saturation.md](docs/saturation.md) antes de interpretar las probabilidades.
 
 ## Desarrollo
 

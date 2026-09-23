@@ -36,6 +36,7 @@ dev = [
 [project.scripts]
 emt-collector = "emt_collector.__main__:main"
 emt-bunching = "emt_collector.bunching.cli:main"
+emt-saturation = "emt_collector.saturation.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/emt_collector"]
