@@ -17,3 +17,4 @@ build/
 *.db
 *.sqlite
 pgdata/
+reports/

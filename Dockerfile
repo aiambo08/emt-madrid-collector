@@ -9,9 +9,10 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip && pip install ".[analysis]"
 
-RUN useradd --system --uid 10001 --no-create-home collector
+RUN useradd --system --uid 10001 --no-create-home collector \
+    && mkdir /reports && chown collector /reports
 USER collector
 
 ENTRYPOINT ["emt-collector"]

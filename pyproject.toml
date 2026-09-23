@@ -21,6 +21,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analysis = [
+    "scikit-learn==1.6.1",
+    "numpy==2.2.6",
+    "scipy==1.15.3",
+]
 dev = [
     "pytest>=8",
     "respx>=0.21",
@@ -30,6 +35,7 @@ dev = [
 
 [project.scripts]
 emt-collector = "emt_collector.__main__:main"
+emt-bunching = "emt_collector.bunching.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/emt_collector"]
@@ -49,7 +55,7 @@ mypy_path = "src"
 packages = ["emt_collector"]
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*"]
+module = ["apscheduler.*", "sklearn.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -31,6 +31,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 - [Esquema de datos](#esquema-de-datos)
 - [Fiabilidad del dataset](#fiabilidad-del-dataset-gaps-idempotencia-logs)
 - [Volumen y retención](#volumen-y-retención)
+- [Detector y predictor de bus bunching](#detector-y-predictor-de-bus-bunching)
 - [Desarrollo](#desarrollo)
 
 ## Funcionalidades
@@ -51,6 +52,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 | **Logging estructurado** | JSON por línea (`structlog`) con eventos `emt.login`, `emt.retry`, `emt.reauth`, `cycle.start`, `cycle.end`, `stop.failed`, `scheduler.job_missed`, … |
 | **Despliegue** | Dockerfile (usuario no root) + `docker-compose.yml` (TimescaleDB con healthcheck + recolector, volumen persistente, `restart: unless-stopped`, apagado limpio con `SIGTERM`). |
 | **CLI** | `run`, `once`, `init-db`, `check`, `lines` (ver [Comandos disponibles](#comandos-disponibles)). |
+| **Bus bunching** | `emt-bunching`: detecta agrupamientos por línea/parada/destino, entrena un predictor a 15 minutos con evaluación temporal y genera informes HTML, JSON y CSV. Incluye demo sintética sin credenciales. |
 
 ## Requisitos previos
 
@@ -497,11 +499,51 @@ SELECT add_retention_policy('arrival_estimates', INTERVAL '365 days');
 Sin Timescale, planifica particionado o archivado (p. ej. `COPY … TO` Parquet mensual) cuando
 las tablas superen unos pocos GB.
 
+## Detector y predictor de bus bunching
+
+La segunda fase utiliza `arrival_estimates`, `collection_cycles` y `collection_gaps`, sin
+consumir cuota EMT ni modificar la base de datos.
+
+- **Detector:** al menos 3 buses distintos de la misma línea, parada y destino en 3 minutos,
+  tras un intervalo de al menos 20 minutos entre pasos inferidos. Umbrales configurables.
+- **Predictor:** regresión logística sobre retardos de la serie, intervalos entre buses,
+  estimaciones de llegada y calendario de Madrid; riesgo de inicio en los próximos 15 minutos.
+- **Demostración:** informe HTML autónomo con episodios, evolución del riesgo, comparación por
+  línea/hora y métricas frente a un baseline. Entrenamiento/evaluación en orden temporal.
+
+**Prueba inmediata, sin API ni base de datos** (en el entorno virtual):
+
+```bash
+pip install -e ".[analysis]"
+emt-bunching demo --output reports/demo
+```
+
+Abre `reports/demo/report.html` en el navegador. **La demo usa datos sintéticos**; sus métricas
+no demuestran rendimiento sobre el servicio real. Si no se reconoce el ejecutable, usa
+`python -m emt_collector.bunching.cli demo --output reports/demo`.
+
+**Con tu histórico real** (conexión de BD configurada en `.env`; sustituye las fechas):
+
+```bash
+emt-bunching analyze --start 2026-09-01T00:00:00Z --end 2026-09-22T00:00:00Z --output reports/history
+emt-bunching predict --model reports/history/model.json
+```
+
+Si faltan datos, `analyze` genera el informe del detector y explica por qué no ha entrenado.
+Necesita al menos 7 días entre instantes etiquetados y ambas clases en entrenamiento y
+evaluación. No utiliza el modelo sintético para predecir con datos reales.
+
+Los pasos se **infieren de ETAs y distancia a parada**; no son pasos confirmados por un sensor.
+Sin observaciones regulares, no se puede distinguir un hueco del servicio de uno de datos.
+Conserva el muestreo de 60 segundos en pocas paradas estables para esta fase.
+
+**[Guía completa: Docker, datos reales, parámetros, evaluación y limitaciones](docs/bunching.md)**.
+
 ## Desarrollo
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,analysis]"
 ruff check . && ruff format --check . && mypy && pytest -q
 ```
 
