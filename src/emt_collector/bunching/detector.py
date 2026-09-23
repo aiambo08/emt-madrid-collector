@@ -141,11 +141,11 @@ def _vanish_passages(
                 groups.append([row])
     passages: list[Passage] = []
     for visit in groups:
-        passage = _vanished(
+        inferred = _vanished(
             route, visit, samples, available, passed_at[visit[0].bus_id], parameters
         )
-        if passage is not None:
-            passages.append(passage)
+        if inferred is not None:
+            passages.append(inferred)
     return passages
 
 
