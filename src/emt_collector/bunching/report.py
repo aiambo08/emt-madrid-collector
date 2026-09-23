@@ -217,10 +217,17 @@ def write_outputs(
             f"{example.gap_seconds / 60:.1f} min de intervalo.</p>"
             '<figure class="a-panel" data-a-chart="line" data-a-chart-unit="%">'
             '<figcaption class="a-panel__title">Riesgo antes y después del episodio</figcaption>'
+            '<p class="a-section__note">Hora de Madrid: '
+            f"{local(example.start - timedelta(minutes=30))} → "
+            f"{local(example.start + timedelta(minutes=15))}.</p>"
             + table(
-                ["Hora", "Probabilidad", "Etiqueta (0 o 100%)"],
+                ["Hora (Madrid)", "Probabilidad", "Etiqueta (0 o 100%)"],
                 [
-                    [local(row.at), f"{risk * 100:.1f}%", f"{row.target * 100}%"]
+                    [
+                        row.at.astimezone(MADRID).strftime("%H:%M"),
+                        f"{risk * 100:.1f}%",
+                        f"{row.target * 100}%",
+                    ]
                     for row, risk, _ in holdout
                     if row.route == example.route
                     and example.start - timedelta(minutes=30)
