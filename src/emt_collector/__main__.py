@@ -13,7 +13,12 @@ from emt_collector.analysis.stats import default_window, history_stats
 from emt_collector.api.client import EMTClient, EMTError
 from emt_collector.collector import Collector
 from emt_collector.config import ConfigError, Settings
-from emt_collector.db.repository import Repository, init_schema, make_engine
+from emt_collector.db.repository import (
+    Repository,
+    apply_timescale_policies,
+    init_schema,
+    make_engine,
+)
 from emt_collector.logging_setup import configure_logging
 from emt_collector.scheduler import run_forever
 
@@ -108,6 +113,10 @@ def _run(args: argparse.Namespace) -> int:
     engine = make_engine(database_url)
     timescale = init_schema(engine, use_timescale=settings.db_use_timescale)
     log.info("db.ready", url=_redact(database_url), timescale=timescale)
+    if timescale and args.command in {"init-db", "run"}:
+        apply_timescale_policies(
+            engine, settings.db_compress_after_days, settings.db_retention_days
+        )
     if args.command == "init-db":
         return 0
     if args.command == "stats":

@@ -26,6 +26,10 @@ HYPERTABLES = {
     "bus_positions": "sample_ts",
     "arrival_estimates": "sample_ts",
 }
+COMPRESS_SEGMENT_BY = {
+    "bus_positions": "line, bus_id",
+    "arrival_estimates": "line, stop_id",
+}
 
 
 def utcnow() -> datetime:
@@ -58,6 +62,42 @@ def init_schema(engine: Engine, use_timescale: bool = True) -> bool:
             )
     log.info("db.timescale_enabled", hypertables=list(HYPERTABLES))
     return True
+
+
+def apply_timescale_policies(engine: Engine, compress_after_days: int, retention_days: int) -> None:
+    """Set compression/retention jobs on the hypertables; 0 removes the corresponding policy.
+
+    Policies are re-created so a changed interval in .env takes effect on the next start.
+    """
+    for table in HYPERTABLES:
+        with engine.begin() as conn:
+            conn.execute(text(f"SELECT remove_compression_policy('{table}', if_exists => TRUE)"))
+            conn.execute(text(f"SELECT remove_retention_policy('{table}', if_exists => TRUE)"))
+            if compress_after_days:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {table} SET (timescaledb.compress, "
+                        f"timescaledb.compress_segmentby = '{COMPRESS_SEGMENT_BY[table]}', "
+                        "timescaledb.compress_orderby = 'sample_ts')"
+                    )
+                )
+                conn.execute(
+                    text(
+                        f"SELECT add_compression_policy('{table}', "
+                        f"INTERVAL '{compress_after_days} days')"
+                    )
+                )
+            if retention_days:
+                conn.execute(
+                    text(
+                        f"SELECT add_retention_policy('{table}', INTERVAL '{retention_days} days')"
+                    )
+                )
+    log.info(
+        "db.timescale_policies",
+        compress_after_days=compress_after_days,
+        retention_days=retention_days,
+    )
 
 
 class Repository:

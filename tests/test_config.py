@@ -85,3 +85,10 @@ def test_init_db_needs_no_credentials(
 def test_interval_must_be_positive() -> None:
     with pytest.raises(ValidationError, match="collect_interval_seconds"):
         Settings(_env_file=None, collect_interval_seconds=0)
+
+
+def test_timescale_policy_days_default_and_validation() -> None:
+    settings = Settings(_env_file=None)
+    assert (settings.db_compress_after_days, settings.db_retention_days) == (7, 0)
+    with pytest.raises(ValidationError, match="db_retention_days"):
+        Settings(_env_file=None, db_retention_days=-1)

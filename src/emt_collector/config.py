@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     postgres_password: str | None = None
     postgres_db: str = "emt"
     db_use_timescale: bool = True
+    # Timescale policies applied by init-db/run (0 = do not apply). Compression keeps old
+    # chunks small; retention DROPS data older than the interval, so it defaults to off.
+    db_compress_after_days: int = Field(default=7, ge=0)
+    db_retention_days: int = Field(default=0, ge=0)
 
     log_level: str = "INFO"
     log_format: str = "json"
