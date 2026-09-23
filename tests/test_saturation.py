@@ -181,4 +181,6 @@ def test_cli_empty_database_exports_report_without_model(
     assert summary["headways"] == summary["labeled_windows"] == 0
     assert summary["training_error"]
     assert not (output / "model.json").exists()
-    assert "HISTÓRICO DE LA BASE DE DATOS" in (output / "report.html").read_text()
+    report = (output / "report.html").read_text()
+    assert "HISTÓRICO DE LA BASE DE DATOS" in report
+    assert report.count("Sin filas para este periodo.") == 2
