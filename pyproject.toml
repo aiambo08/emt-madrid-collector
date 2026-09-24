@@ -38,6 +38,7 @@ emt-collector = "emt_collector.__main__:main"
 emt-bunching = "emt_collector.bunching.cli:main"
 emt-saturation = "emt_collector.saturation.cli:main"
 emt-frequency = "emt_collector.frequency.cli:main"
+emt-impact = "emt_collector.impact.cli:main"
 emt-analysis = "emt_collector.analysis.cli:main"
 emt-bot = "emt_collector.telegram.cli:main"
 
@@ -59,7 +60,7 @@ mypy_path = "src"
 packages = ["emt_collector"]
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*", "sklearn.*"]
+module = ["apscheduler.*", "sklearn.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

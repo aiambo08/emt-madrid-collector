@@ -35,6 +35,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 - [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio)
 - [Optimización de frecuencias](#optimización-de-frecuencias)
 - [Bot de Telegram](#bot-de-telegram)
+- [Análisis de impacto](#análisis-de-impacto)
 - [Validación con el histórico real](#validación-con-el-histórico-real)
 - [Desarrollo](#desarrollo)
 
@@ -58,11 +59,12 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 | **CLI** | `run`, `once`, `init-db`, `check`, `lines`, `stats` (ver [Comandos disponibles](#comandos-disponibles)). |
 | **Diagnóstico del histórico** | `emt-collector stats`: cobertura temporal, ciclos esperados vs observados, gaps por tipo, rutas detectadas, pasos inferidos por día, headway mediano y ciclo estimado, con avisos sobre lo que falta para que los análisis funcionen. Sin llamadas a la API. |
 | **Compresión/retención Timescale** | `init-db`/`run` aplican políticas de compresión (`DB_COMPRESS_AFTER_DAYS`, 7 por defecto) y retención (`DB_RETENTION_DAYS`, desactivada por defecto) a las hypertables. |
-| **Análisis periódico** | `emt-analysis run`: ejecuta bunching, saturación y frecuencias sobre los últimos N días, guarda cada ejecución en su carpeta con `summary.json` y puede repetirse cada N horas (servicio Compose opcional `analysis`). |
+| **Análisis periódico** | `emt-analysis run`: ejecuta bunching, saturación, frecuencias y (con `--event`) impacto sobre los últimos N días, guarda cada ejecución en su carpeta con `summary.json` y puede repetirse cada N horas (servicio Compose opcional `analysis`). |
 | **Bus bunching** | `emt-bunching`: detecta agrupamientos por línea/parada/destino, entrena un predictor a 15 minutos con evaluación temporal y genera informes HTML, JSON y CSV. Incluye demo sintética sin credenciales. |
 | **Saturación del servicio** | `emt-saturation`: marca intervalos entre buses ≥ 1,5× la mediana de la ruta y hora (mín. 12 min), predice la probabilidad de que la siguiente llegada cierre uno y los minutos de espera; backtest cronológico, informe HTML y demo sintética. No mide ocupación. |
 | **Optimización de frecuencias** | `emt-frequency`: por línea/parada/sentido y hora local calcula intervalo medio, regularidad (CV), espera media de pasajero y buses en servicio implícitos (ciclo / intervalo); propone redistribuir las mismas horas-bus entre franjas para minimizar la espera ponderada por demanda (proxy, uniforme o CSV propio). Informe HTML comparando actual vs propuesto y demo sintética. |
 | **Bot de Telegram** | `emt-bot` (servicio Compose opcional `bot`): `/llegadas <parada> [línea]` en tiempo real desde la API EMT, `/riesgo <parada> [línea]` con los modelos de bunching y saturación entrenados sobre el histórico real (nunca sintéticos), `/estado` del recolector desde la BD y alertas opcionales con umbral de probabilidad y cooldown. Token en `TELEGRAM_BOT_TOKEN`; acceso restringible por chat. |
+| **Análisis de impacto** | `emt-impact`: compara el servicio antes y después de un evento (cambio de frecuencias, obra, huelga…) por ruta: intervalo medio, espera media, tasa de intervalos saturados y episodios de bunching por día, con IC bootstrap, contraste de Mann-Whitney y diferencias en diferencias frente a rutas de control. Informe HTML, demo sintética, integración en `emt-analysis run --event` y comando `/impacto` del bot. |
 
 ## Requisitos previos
 
@@ -218,7 +220,8 @@ Análisis (instalados con `pip install -e ".[analysis]"`; en Docker ya están en
 | `emt-bunching demo\|analyze\|predict` | [Detector y predictor de bus bunching](#detector-y-predictor-de-bus-bunching) |
 | `emt-saturation demo\|analyze\|predict` | [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio) |
 | `emt-frequency demo\|analyze` | [Optimización de frecuencias](#optimización-de-frecuencias) |
-| `emt-analysis run` | Los tres `analyze` de una vez (opcionalmente cada N horas): ver [Validación con el histórico real](#validación-con-el-histórico-real) |
+| `emt-impact demo\|analyze` | [Análisis de impacto](#análisis-de-impacto) |
+| `emt-analysis run` | Los tres `analyze` de una vez, más impacto con `--event` (opcionalmente cada N horas): ver [Validación con el histórico real](#validación-con-el-histórico-real) |
 | `emt-bot run\|check` | [Bot de Telegram](#bot-de-telegram) |
 
 ## Obtener credenciales EMT MobilityLabs
@@ -632,7 +635,8 @@ regularización de la oferta, no una recomendación operativa. Detalles y límit
 | --- | --- | --- |
 | `/llegadas <parada> [línea]` | API EMT (una petición) | Próximas llegadas con línea, destino, minutos, bus y distancia. |
 | `/riesgo <parada> [línea]` | Modelos de `emt-analysis run` + BD | Probabilidad de bunching en los próximos 15 min y de que la siguiente llegada cierre un intervalo saturado, con espera prevista. Solo modelos entrenados con el histórico real; los sintéticos se ignoran. |
-| `/estado` | BD | Último ciclo (estado, paradas OK/fallidas, llegadas), ciclos y gaps de la última hora, modelos cargados. |
+| `/impacto [parada]` | `summary.json` del último `emt-analysis run --event` | Efecto neto del evento (tratadas − control) y antes/después de cada ruta tratada, marcando los cambios cuyo IC no incluye el cero. Solo análisis sobre el histórico real. |
+| `/estado` | BD | Último ciclo (estado, paradas OK/fallidas, llegadas), ciclos y gaps de la última hora, modelos e impacto cargados. |
 
 Puesta en marcha: crea el bot con [@BotFather](https://t.me/BotFather), pon el token en
 `TELEGRAM_BOT_TOKEN` y:
@@ -647,6 +651,35 @@ recibes alertas cada `TELEGRAM_ALERT_EVERY_MINUTES` cuando un modelo supera
 `TELEGRAM_ALERT_PROBABILITY` (una por ruta y tipo cada `TELEGRAM_ALERT_COOLDOWN_MINUTES`). El
 bot lee los modelos del volumen `reports` que escribe el servicio `analysis` y los recarga solo
 cuando cambia `latest.json`. Guía completa en [docs/telegram.md](docs/telegram.md).
+
+## Análisis de impacto
+
+`emt-impact` responde a «¿cambió el servicio tras el evento X?» comparando dos ventanas del
+histórico (por defecto 7 días antes y 7 después) para cada ruta (línea, parada, destino):
+
+- **Métricas por ventana:** intervalo medio entre buses, espera media de pasajero
+  `E[H²] / 2E[H]`, tasa de intervalos saturados (umbral calibrado **solo** con la ventana
+  anterior) y episodios de bunching por día.
+- **Incertidumbre:** intervalo de confianza bootstrap percentil (95 %, 1.000 remuestreos) del
+  cambio después − antes de cada métrica; contraste de Mann-Whitney sobre la distribución de
+  intervalos. Un cambio es «significativo» si su IC no contiene el cero.
+- **Controles:** con `--control-stop`/`--control-line` (rutas no afectadas) calcula
+  **diferencias en diferencias**: cambio medio de las rutas tratadas menos el de las de control,
+  descontando lo que varió en toda la red (clima, calendario, obras generales).
+
+```bash
+pip install -e ".[analysis]"
+emt-impact demo --output reports/impact-demo                       # dos rutas sintéticas, una tratada
+emt-impact analyze --event 2026-10-06T00:00:00+02:00 --before-days 7 --after-days 7 \
+  --stop 1182 --stop 1183 --control-stop 1170 --output reports/impact-1006
+emt-analysis run --output reports --event 2026-10-06T00:00:00+02:00 --control-line 45
+```
+
+Salidas: `report.html`, `summary.json` y `changes.csv`. Requiere ≥ 20 intervalos y ≥ 2 días con
+datos en **cada** ventana por ruta (las demás se listan como descartadas). Sin controles, todas las
+rutas cuentan como tratadas y el resultado es un antes/después descriptivo: un cambio
+significativo **no implica causalidad**. Detalles, interpretación y límites en
+[docs/impact.md](docs/impact.md).
 
 ## Validación con el histórico real
 
@@ -696,8 +729,9 @@ emt-frequency analyze  --start 2026-09-23T15:00:00Z --output reports/frequency-r
 `emt-analysis run` escribe `reports/<fecha>Z/{bunching,saturation,frequency}/`, un
 `summary.json` por ejecución (estado `ok`, `insufficient_data` o `error` de cada análisis) y
 `reports/latest.json` apuntando a la última; no sobreescribe ejecuciones anteriores. Acepta
-`--stop` (repetible), `--only bunching|saturation|frequency` y `--every-hours N` para quedarse
-en bucle. Para tenerlo siempre en marcha junto al recolector:
+`--stop` (repetible), `--only bunching|saturation|frequency|impact`, `--event <ISO 8601>` (añade
+`impact/` comparando antes/después del evento dentro de la ventana, con `--control-stop` /
+`--control-line`) y `--every-hours N` para quedarse en bucle. Para tenerlo siempre en marcha junto al recolector:
 
 ```bash
 docker compose --profile analysis up -d analysis      # cada 24 h sobre los últimos 14 días
@@ -742,6 +776,7 @@ src/emt_collector/
 ├── bunching/          # data.py (carga), detector.py (pasos/episodios), features, model, report, cli
 ├── saturation/        # headways, etiquetas, modelos, report, cli (emt-saturation)
 ├── frequency/         # servicio observado, ciclo, optimizador, report, cli (emt-frequency)
+├── impact/            # ventanas antes/después, bootstrap, Mann-Whitney, DiD, report, cli (emt-impact)
 └── telegram/          # api (Bot API por httpx), models (carga de model.json), data, handlers, bot, cli (emt-bot)
 ```
 

@@ -9,6 +9,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from emt_collector.bunching.model import ForecastModel
+from emt_collector.impact.summary import ImpactSummary
 from emt_collector.saturation.model import SaturationModel
 
 log = structlog.get_logger(__name__)
@@ -17,6 +18,7 @@ M = TypeVar("M", ForecastModel, SaturationModel)
 
 LATEST = "latest.json"
 MODEL_FILE = "model.json"
+SUMMARY_FILE = "summary.json"
 
 
 class _Result(BaseModel):
@@ -40,6 +42,7 @@ class Loaded:
     bunching: ForecastModel | None
     saturation: SaturationModel | None
     generated_at: datetime | None
+    impact: ImpactSummary | None = None
 
     @property
     def stops(self) -> list[str]:
@@ -86,13 +89,15 @@ class ModelStore:
         outputs = {r.analysis: _resolve(self._reports, latest, r.output) for r in summary.results}
         bunching = _model(outputs.get("bunching"), ForecastModel)
         saturation = _model(outputs.get("saturation"), SaturationModel)
+        impact = _impact(outputs.get("impact"))
         log.info(
             "bot.models_loaded",
             generated_at=summary.generated_at,
             bunching=bunching is not None,
             saturation=saturation is not None,
+            impact=impact is not None,
         )
-        return Loaded(bunching, saturation, summary.generated_at)
+        return Loaded(bunching, saturation, summary.generated_at, impact)
 
 
 def _resolve(reports: Path, latest: Path, output: str) -> Path | None:
@@ -121,3 +126,17 @@ def _model(folder: Path | None, kind: type[M]) -> M | None:
         log.warning("bot.model_ignored_synthetic", path=str(folder / MODEL_FILE))
         return None
     return model
+
+
+def _impact(folder: Path | None) -> ImpactSummary | None:
+    if folder is None or not (folder / SUMMARY_FILE).is_file():
+        return None
+    try:
+        summary = ImpactSummary.load(folder / SUMMARY_FILE)
+    except (OSError, ValidationError) as exc:
+        log.warning("bot.impact_invalid", path=str(folder / SUMMARY_FILE), error=str(exc))
+        return None
+    if summary.source != "database":
+        log.warning("bot.model_ignored_synthetic", path=str(folder / SUMMARY_FILE))
+        return None
+    return summary

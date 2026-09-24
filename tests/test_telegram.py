@@ -18,6 +18,8 @@ from emt_collector.bunching.features import examples
 from emt_collector.bunching.model import ForecastModel, train_model
 from emt_collector.config import Settings
 from emt_collector.db.models import ArrivalEstimate, CollectionCycle, CollectionGap, Stop
+from emt_collector.impact import cli as impact_cli
+from emt_collector.impact.summary import ImpactSummary
 from emt_collector.telegram.api import MAX_MESSAGE_CHARS, TelegramAPI, TelegramError, _chunks
 from emt_collector.telegram.bot import Bot
 from emt_collector.telegram.cli import main
@@ -303,6 +305,7 @@ class FakeSource:
     def __init__(self) -> None:
         self.risk_rows: list[Risk] = []
         self.arrival_calls = 0
+        self.impact: ImpactSummary | None = None
 
     def arrivals(self, stop: str, line: str | None) -> list[Arrival]:
         self.arrival_calls += 1
@@ -322,10 +325,10 @@ class FakeSource:
         return [r for r in self.risk_rows if stops is None or r.route.stop_id in stops]
 
     def status(self, at: datetime) -> Status:
-        return Status(at, None, 0, 0, 0, EMPTY)
+        return Status(at, None, 0, 0, 0, self.models())
 
     def models(self) -> Loaded:
-        return EMPTY
+        return Loaded(None, None, None, self.impact)
 
 
 def risk(
@@ -374,6 +377,41 @@ def test_handlers_format_commands_and_validate_arguments() -> None:
     text = handlers.handle("/estado", NOW) or ""
     assert "Sin ciclos registrados" in text and "ninguno cargado" in text
     assert source.arrival_calls == 3  # /estado y /riesgo no llaman a la API EMT
+
+
+def test_impacto_command_uses_last_database_summary(tmp_path: Path) -> None:
+    source = FakeSource()
+    handlers = Handlers(source, 60)
+    assert "Sin análisis de impacto" in (handlers.handle("/impacto", NOW) or "")
+    assert "Uso: /impacto" in (handlers.handle("/impacto abc", NOW) or "")
+
+    output = tmp_path / "impact"
+    impact_cli.main(["demo", "--days", "6", "--bootstrap-samples", "200", "--output", str(output)])
+    synthetic = ImpactSummary.load(output / "summary.json")
+    source.impact = synthetic.model_copy(update={"source": "database"})
+    text = handlers.handle("/impacto", NOW) or ""
+    assert "Impacto del evento" in text and "Efecto neto" in text
+    assert "L27 · DEMO-1 → NORTE" in text and "L45" not in text
+    assert "Intervalo medio" in text and "*" in text
+    only = handlers.handle("/impacto DEMO-1", NOW) or ""
+    assert "Uso: /impacto" in only  # las paradas EMT son numéricas
+    assert "no está entre las rutas tratadas" in (handlers.handle("/impacto 1182", NOW) or "")
+    status = handlers.handle("/estado", NOW) or ""
+    assert "Impacto: evento" in status and "1 rutas tratadas" in status
+
+    # Los resúmenes sintéticos nunca se sirven desde reports/latest.json
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    latest = {
+        "generated_at": NOW.isoformat(),
+        "results": [{"analysis": "impact", "output": str(output)}],
+    }
+    (reports / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+    assert ModelStore(reports).current.impact is None
+    (output / "summary.json").write_text(source.impact.model_dump_json(), encoding="utf-8")
+    (reports / "latest.json").write_text(json.dumps(latest) + " ", encoding="utf-8")
+    loaded = ModelStore(reports).current.impact
+    assert loaded is not None and loaded.event == synthetic.event
 
 
 def test_format_status_flags_stale_or_failed_cycles(
