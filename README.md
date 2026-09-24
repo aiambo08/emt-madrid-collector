@@ -34,6 +34,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 - [Detector y predictor de bus bunching](#detector-y-predictor-de-bus-bunching)
 - [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio)
 - [Optimización de frecuencias](#optimización-de-frecuencias)
+- [Bot de Telegram](#bot-de-telegram)
 - [Validación con el histórico real](#validación-con-el-histórico-real)
 - [Desarrollo](#desarrollo)
 
@@ -61,6 +62,7 @@ bunching, predicción de saturación, optimización de frecuencias, bots, etc.).
 | **Bus bunching** | `emt-bunching`: detecta agrupamientos por línea/parada/destino, entrena un predictor a 15 minutos con evaluación temporal y genera informes HTML, JSON y CSV. Incluye demo sintética sin credenciales. |
 | **Saturación del servicio** | `emt-saturation`: marca intervalos entre buses ≥ 1,5× la mediana de la ruta y hora (mín. 12 min), predice la probabilidad de que la siguiente llegada cierre uno y los minutos de espera; backtest cronológico, informe HTML y demo sintética. No mide ocupación. |
 | **Optimización de frecuencias** | `emt-frequency`: por línea/parada/sentido y hora local calcula intervalo medio, regularidad (CV), espera media de pasajero y buses en servicio implícitos (ciclo / intervalo); propone redistribuir las mismas horas-bus entre franjas para minimizar la espera ponderada por demanda (proxy, uniforme o CSV propio). Informe HTML comparando actual vs propuesto y demo sintética. |
+| **Bot de Telegram** | `emt-bot` (servicio Compose opcional `bot`): `/llegadas <parada> [línea]` en tiempo real desde la API EMT, `/riesgo <parada> [línea]` con los modelos de bunching y saturación entrenados sobre el histórico real (nunca sintéticos), `/estado` del recolector desde la BD y alertas opcionales con umbral de probabilidad y cooldown. Token en `TELEGRAM_BOT_TOKEN`; acceso restringible por chat. |
 
 ## Requisitos previos
 
@@ -217,6 +219,7 @@ Análisis (instalados con `pip install -e ".[analysis]"`; en Docker ya están en
 | `emt-saturation demo\|analyze\|predict` | [Predicción de saturación del servicio](#predicción-de-saturación-del-servicio) |
 | `emt-frequency demo\|analyze` | [Optimización de frecuencias](#optimización-de-frecuencias) |
 | `emt-analysis run` | Los tres `analyze` de una vez (opcionalmente cada N horas): ver [Validación con el histórico real](#validación-con-el-histórico-real) |
+| `emt-bot run\|check` | [Bot de Telegram](#bot-de-telegram) |
 
 ## Obtener credenciales EMT MobilityLabs
 
@@ -621,6 +624,30 @@ Salidas: `report.html`, `summary.json`, `plan.csv` y `demand.csv`. Requiere ≥ 
 regularización de la oferta, no una recomendación operativa. Detalles y límites en
 [docs/frequency.md](docs/frequency.md).
 
+## Bot de Telegram
+
+`emt-bot` expone por Telegram lo que ya calcula el sistema, sin lógica analítica propia:
+
+| Comando | Fuente | Qué devuelve |
+| --- | --- | --- |
+| `/llegadas <parada> [línea]` | API EMT (una petición) | Próximas llegadas con línea, destino, minutos, bus y distancia. |
+| `/riesgo <parada> [línea]` | Modelos de `emt-analysis run` + BD | Probabilidad de bunching en los próximos 15 min y de que la siguiente llegada cierre un intervalo saturado, con espera prevista. Solo modelos entrenados con el histórico real; los sintéticos se ignoran. |
+| `/estado` | BD | Último ciclo (estado, paradas OK/fallidas, llegadas), ciclos y gaps de la última hora, modelos cargados. |
+
+Puesta en marcha: crea el bot con [@BotFather](https://t.me/BotFather), pon el token en
+`TELEGRAM_BOT_TOKEN` y:
+
+```bash
+docker compose --profile bot run --rm bot check     # valida token, BD y modelos
+docker compose --profile bot up -d bot              # long polling, sin puertos abiertos
+```
+
+Con `TELEGRAM_ALLOWED_CHAT_IDS` limitas quién puede consultar y con `TELEGRAM_ALERT_CHAT_IDS`
+recibes alertas cada `TELEGRAM_ALERT_EVERY_MINUTES` cuando un modelo supera
+`TELEGRAM_ALERT_PROBABILITY` (una por ruta y tipo cada `TELEGRAM_ALERT_COOLDOWN_MINUTES`). El
+bot lee los modelos del volumen `reports` que escribe el servicio `analysis` y los recarga solo
+cuando cambia `latest.json`. Guía completa en [docs/telegram.md](docs/telegram.md).
+
 ## Validación con el histórico real
 
 Las demos son sintéticas: **ninguna métrica de los informes demo dice nada del servicio real**.
@@ -714,7 +741,8 @@ src/emt_collector/
 ├── analysis/          # stats.py (diagnóstico del histórico) y cli.py (emt-analysis run)
 ├── bunching/          # data.py (carga), detector.py (pasos/episodios), features, model, report, cli
 ├── saturation/        # headways, etiquetas, modelos, report, cli (emt-saturation)
-└── frequency/         # servicio observado, ciclo, optimizador, report, cli (emt-frequency)
+├── frequency/         # servicio observado, ciclo, optimizador, report, cli (emt-frequency)
+└── telegram/          # api (Bot API por httpx), models (carga de model.json), data, handlers, bot, cli (emt-bot)
 ```
 
 ## Licencia y atribución

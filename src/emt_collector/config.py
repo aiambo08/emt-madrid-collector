@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
@@ -61,10 +62,33 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "json"
 
-    @field_validator("emt_lines", "emt_stops", mode="before")
+    # Bot de Telegram (emt-bot). Chats vacíos = cualquiera puede consultar / nadie recibe alertas.
+    telegram_bot_token: str | None = None
+    telegram_allowed_chat_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    telegram_alert_chat_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    telegram_alert_every_minutes: int = Field(default=5, ge=1)
+    telegram_alert_probability: float = Field(default=0.6, gt=0, le=1)
+    telegram_alert_cooldown_minutes: int = Field(default=30, ge=1)
+    reports_dir: Path = Path("reports")
+
+    @field_validator(
+        "emt_lines",
+        "emt_stops",
+        "telegram_allowed_chat_ids",
+        "telegram_alert_chat_ids",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> list[str]:
         return _parse_csv(value)
+
+    @field_validator("telegram_allowed_chat_ids", "telegram_alert_chat_ids")
+    @classmethod
+    def _check_chat_ids(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not item.lstrip("-").isdigit():
+                raise ValueError(f"chat id inválido: {item!r} (usa enteros separados por comas)")
+        return value
 
     @field_validator("log_format")
     @classmethod
@@ -109,6 +133,19 @@ class Settings(BaseSettings):
         """Needed by collection commands (`run`, `once`, `check`)."""
         if not self.has_targets:
             raise ConfigError("Set EMT_LINES and/or EMT_STOPS; polling every stop is not viable")
+
+    def require_telegram(self) -> None:
+        """Needed by `emt-bot`."""
+        if not self.telegram_bot_token:
+            raise ConfigError("Set TELEGRAM_BOT_TOKEN (token de @BotFather)")
+
+    @property
+    def telegram_allowed_chats(self) -> set[int]:
+        return {int(item) for item in self.telegram_allowed_chat_ids}
+
+    @property
+    def telegram_alert_chats(self) -> list[int]:
+        return [int(item) for item in self.telegram_alert_chat_ids]
 
     def require_interval(self) -> None:
         """Needed by the scheduler (`run`)."""
