@@ -9,12 +9,15 @@ from emt_collector.api.client import EMTError
 from emt_collector.bunching.domain import Route
 from emt_collector.bunching.features import MADRID
 from emt_collector.collector import normalize_line
+from emt_collector.impact.domain import METRIC_LABELS, METRICS
+from emt_collector.impact.summary import ImpactSummary
 from emt_collector.telegram.api import BotCommand
 from emt_collector.telegram.data import Arrival, DataSource, Risk, Status
 
 COMMANDS = [
     BotCommand(command="llegadas", description="Próximas llegadas: /llegadas <parada> [línea]"),
     BotCommand(command="riesgo", description="Riesgo previsto: /riesgo <parada> [línea]"),
+    BotCommand(command="impacto", description="Antes/después del último evento: /impacto [parada]"),
     BotCommand(command="estado", description="Salud del recolector y modelos"),
     BotCommand(command="ayuda", description="Cómo usar el bot"),
 ]
@@ -24,6 +27,8 @@ HELP = (
     "/llegadas &lt;parada&gt; [línea] — próximas llegadas en tiempo real (API EMT)\n"
     "/riesgo &lt;parada&gt; [línea] — probabilidad de bunching y de intervalo saturado en los "
     "próximos minutos, según los modelos entrenados con el histórico\n"
+    "/impacto [parada] — cambio del servicio antes y después del último evento analizado "
+    "(emt-analysis run --event)\n"
     "/estado — último ciclo del recolector, gaps y modelos cargados\n"
     "/ayuda — este mensaje\n\n"
     "Las paradas son los códigos EMT (p. ej. 1182). El riesgo es una predicción sobre pasos "
@@ -32,6 +37,7 @@ HELP = (
 
 STOP_RE = re.compile(r"^\d{1,6}$")
 MAX_ARRIVALS = 12
+MAX_IMPACT_ROUTES = 6
 
 
 def command_parts(text: str) -> tuple[str, list[str]]:
@@ -142,6 +148,69 @@ def format_status(status: Status, expected_interval_seconds: int) -> str:
             f"{len(models.bunching.routes) if models.bunching else 0} rutas, saturación "
             f"{len(models.saturation.routes) if models.saturation else 0} rutas."
         )
+    if models.impact:
+        lines.append(
+            f"Impacto: evento {local(models.impact.event)} "
+            f"{models.impact.event.astimezone(MADRID):%d/%m}, "
+            f"{len(models.impact.treated)} rutas tratadas (/impacto)."
+        )
+    return "\n".join(lines)
+
+
+def _value(metric: str, value: float) -> str:
+    return f"{value:.0%}" if metric == "saturation_rate" else f"{value:.1f}"
+
+
+def _delta(metric: str, value: float) -> str:
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.0%}" if metric == "saturation_rate" else f"{sign}{value:.1f}"
+
+
+def format_impact(summary: ImpactSummary | None, stop: str | None) -> str:
+    if summary is None:
+        return (
+            "Sin análisis de impacto cargado: ejecuta emt-analysis run --event &lt;fecha&gt; "
+            "(o emt-impact analyze) sobre el histórico."
+        )
+    day = summary.event.astimezone(MADRID).strftime("%Y-%m-%d %H:%M")
+    lines = [
+        f"<b>Impacto del evento {day}</b>",
+        f"Antes: {summary.start.astimezone(MADRID):%d/%m} → {day[:10]}; "
+        f"después: hasta {summary.end_exclusive.astimezone(MADRID):%d/%m %H:%M}.",
+    ]
+    routes = summary.treated
+    if stop is not None:
+        routes = [r for r in routes if r.stop_id == stop]
+        if not routes:
+            return f"La parada {escape(stop)} no está entre las rutas tratadas del análisis."
+    if summary.difference_in_differences and stop is None:
+        lines.append("<b>Efecto neto</b> (tratadas − control):")
+        for d in summary.difference_in_differences:
+            mark = " *" if d.significant else ""
+            lines.append(
+                f"• {METRIC_LABELS[d.metric]}: {_delta(d.metric, d.estimate)} "
+                f"[{_delta(d.metric, d.ci_low)}, {_delta(d.metric, d.ci_high)}]{mark}"
+            )
+    for route in routes[:MAX_IMPACT_ROUTES]:
+        lines.append(
+            f"<b>L{escape(route.line)} · {escape(route.stop_id)} → {escape(route.destination)}</b>"
+        )
+        for metric in METRICS:
+            change = route.change(metric)
+            if change is None:
+                continue
+            mark = " *" if change.significant else ""
+            lines.append(
+                f"• {METRIC_LABELS[metric]}: {_value(metric, change.before)} → "
+                f"{_value(metric, change.after)} ({_delta(metric, change.delta)}){mark}"
+            )
+    if len(routes) > MAX_IMPACT_ROUTES:
+        lines.append(
+            f"… y {len(routes) - MAX_IMPACT_ROUTES} rutas más; filtra con /impacto &lt;parada&gt;."
+        )
+    if not routes:
+        lines.append("Ninguna ruta tratada con datos suficientes en ambas ventanas.")
+    lines.append("* cambio significativo (el intervalo de confianza no incluye el cero).")
     return "\n".join(lines)
 
 
@@ -171,6 +240,10 @@ class Handlers:
             return self.risk(args, now)
         if command == "estado":
             return format_status(self._source.status(now), self._interval)
+        if command == "impacto":
+            if args and not STOP_RE.match(args[0]):
+                return "Uso: /impacto [parada], p. ej. /impacto 1182"
+            return format_impact(self._source.models().impact, args[0] if args else None)
         if command:
             return f"Comando desconocido: /{escape(command)}. Usa /ayuda."
         return None

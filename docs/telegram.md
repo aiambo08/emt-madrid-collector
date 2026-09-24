@@ -57,7 +57,8 @@ Local sin Docker: `pip install -e ".[analysis]"` y `emt-bot run [--reports repor
 | --- | --- | --- |
 | `/llegadas <parada> [línea]` | API EMT (1 petición) | Próximas llegadas ordenadas por ETA: línea, destino, minutos, id de bus y distancia. Los buses sin estimación válida (`estimateArrive` ≥ 999999) se listan como "sin estimación". Máx. 12 filas. |
 | `/riesgo <parada> [línea]` | Modelos + BD (sin API) | Por cada línea/destino de la parada: probabilidad de bunching en los próximos 15 min, probabilidad de que la siguiente llegada cierre un intervalo saturado, espera prevista y minutos desde el último paso. |
-| `/estado` | BD (sin API) | Último ciclo (hora, estado, paradas OK/fallidas, llegadas insertadas), ciclos/gaps/llegadas de la última hora y modelos cargados. Marca con ⚠️ si el último ciclo no fue `ok` o es más antiguo que 3 intervalos (mín. 5 min). |
+| `/impacto [parada]` | `impact/summary.json` del último `emt-analysis run --event` (sin API) | Efecto neto del evento (tratadas − control, si hay controles) y antes → después de cada ruta tratada (máx. 6; filtra por parada) para intervalo medio, espera, saturación y episodios/día; `*` marca los cambios cuyo IC no incluye el cero. Solo análisis sobre el histórico real; ver [impact.md](impact.md). |
+| `/estado` | BD (sin API) | Último ciclo (hora, estado, paradas OK/fallidas, llegadas insertadas), ciclos/gaps/llegadas de la última hora, modelos e impacto cargados. Marca con ⚠️ si el último ciclo no fue `ok` o es más antiguo que 3 intervalos (mín. 5 min). |
 | `/start`, `/help`, `/ayuda` | — | Ayuda. |
 
 Las paradas son códigos EMT (los mismos de `EMT_STOPS`, p. ej. `1182`); la línea es la etiqueta

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,30 @@ def test_run_executes_the_three_analyses_and_writes_summaries(
     for result in latest["results"]:
         assert (Path(result["output"]) / "report.html").exists()
     assert latest["stops"] == ["100"]
+
+
+def test_event_adds_the_impact_analysis(database: None, tmp_path: Path) -> None:
+    output = tmp_path / "reports"
+    event = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    main(
+        [
+            "run",
+            "--output",
+            str(output),
+            "--only",
+            "impact",
+            "--event",
+            event,
+            "--control-line",
+            "45",
+        ]
+    )
+    latest = json.loads((output / "latest.json").read_text())
+    assert [r["analysis"] for r in latest["results"]] == ["impact"]
+    assert latest["event"] == event
+    summary = json.loads((Path(latest["results"][0]["output"]) / "summary.json").read_text())
+    assert summary["source"] == "database" and summary["routes"] == []
+    assert (Path(latest["results"][0]["output"]) / "report.html").exists()
 
 
 def test_only_limits_the_analyses(database: None, tmp_path: Path) -> None:
