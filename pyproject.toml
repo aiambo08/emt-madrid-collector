@@ -39,6 +39,7 @@ emt-bunching = "emt_collector.bunching.cli:main"
 emt-saturation = "emt_collector.saturation.cli:main"
 emt-frequency = "emt_collector.frequency.cli:main"
 emt-analysis = "emt_collector.analysis.cli:main"
+emt-bot = "emt_collector.telegram.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/emt_collector"]

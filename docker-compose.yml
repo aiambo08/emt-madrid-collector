@@ -53,6 +53,25 @@ services:
       db:
         condition: service_healthy
 
+  # Bot de Telegram (llegadas en tiempo real, riesgo previsto, estado). Opcional:
+  #   docker compose --profile bot up -d bot
+  # Lee los modelos entrenados por `analysis` del volumen `reports`.
+  bot:
+    build: .
+    profiles: [bot]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REPORTS_DIR: /reports
+    entrypoint: ["emt-bot"]
+    command: ["run"]
+    volumes:
+      - reports:/reports:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   reports:
